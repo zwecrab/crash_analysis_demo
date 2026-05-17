@@ -1324,7 +1324,7 @@ function toggleMapStyle(){
   S.mapStyle=to;
   map.removeLayer(baseTileLayer);
   const url=to==='light'
-    ? 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'
+    ? 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en'
     : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
   const subdomains=to==='light'?['mt0','mt1','mt2','mt3']:'abcd';
   baseTileLayer=L.tileLayer(url,{
