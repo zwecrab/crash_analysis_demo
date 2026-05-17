@@ -1,0 +1,10 @@
+.venv
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.db
+sensor_local.duckdb.tmp
+sensor_local.duckdb.wal

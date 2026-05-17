@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "name": "Kamphaeng Phet 6 Rd Corridor",
+    "lat": 13.84015,
+    "lon": 100.556656,
+    "radius_m": 200,
+    "countermeasure_date": null,
+    "note": "Research area covering Area before SRMA, SRMA warning zone, and Area after SRMA."
+  }
+]

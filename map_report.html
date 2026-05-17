@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>L-DCM Crash Risk Analysis — Dashboard</title>
+  <meta name="description" content="Vehicle telemetry dashboard for L-DCM crash risk blackspot analysis. Before/after countermeasure comparison."/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+<div id="app">
+  <!-- Loading -->
+  <div id="loading"><div class="spinner"></div><span id="load-msg">Connecting…</span><span id="load-err"></span></div>
+
+  <!-- Top bar -->
+  <header id="top-bar">
+    <button class="tb-btn" id="btn-reset" title="Re-centre on the active geometry">⟲ Reset View</button>
+    <div class="tb-group tb-mode-group">
+      <span class="tb-label">View:</span>
+      <button class="tb-btn active" id="btn-mode-full" title="Show the full blackspot circle">Full Map</button>
+      <button class="tb-btn" id="btn-mode-road" title="Focus on Kamphaeng Phet 6 Rd, partitioned into 3 sections">Kamphaeng Phet 6</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-group">
+      <span class="tb-label">Accidents:</span>
+      <button class="tb-btn active" id="btn-acc-mode">Persist</button>
+    </div>
+    <div class="tb-group">
+      <button class="tb-btn" id="btn-toggle-static" title="Hide all accidents and moving vehicles, and lock the timeline">Hide Active Data</button>
+    </div>
+    <div class="tb-group">
+      <button class="tb-btn" id="btn-mode-heatmap" title="Heatmap analysis of driving events along Kamphaeng Phet 6 Rd segment">⬡ Heatmap</button>
+    </div>
+    <div class="tb-group">
+      <button class="tb-btn disabled" id="btn-predict" title="Prediction model not yet connected">🔮 Predictions</button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <div id="main">
+
+    <!-- Collision List Panel (NEW) -->
+    <aside id="collision-panel">
+      <div id="collision-header">
+        <span>Collisions</span>
+        <div id="collision-header-right">
+          <span id="collision-count" class="collision-count-badge">0</span>
+          <button id="btn-collapse-collisions" class="collapse-btn" title="Collapse panel">◀</button>
+        </div>
+      </div>
+      <div id="collision-controls">
+        <select id="collision-type-filter" title="Filter by collision type">
+          <option value="all">All Types</option>
+        </select>
+        <select id="collision-severity-filter" title="Filter by severity">
+          <option value="all">All Severities</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <div id="collision-focus-bar" class="collision-focus-bar hidden">
+        <span id="collision-focus-label">Investigating…</span>
+        <button id="btn-clear-focus" class="clear-focus-btn" title="Exit investigation mode">✕ Clear</button>
+      </div>
+      <div id="collision-list"></div>
+    </aside>
+
+    <div id="map-wrap">
+      <div id="map"></div>
+      <button id="btn-close-section" class="close-section-btn hidden" title="Back to full road view" aria-label="Close section view">
+        <span class="close-icon">✕</span>
+        <span class="close-label">Back to full road</span>
+      </button>
+
+      <!-- Heatmap filter panel (visible only in Heatmap mode) -->
+      <div id="heatmap-panel" class="heatmap-panel hidden" aria-label="Heatmap filters">
+        <div class="hm-header">
+          <span class="hm-title">Heatmap Analysis</span>
+          <span class="hm-subtitle">Kamphaeng Phet 6 · Selected Segment</span>
+        </div>
+
+        <div class="hm-section">
+          <div class="hm-label">Event Type</div>
+          <div class="hm-pills" id="hm-event-pills">
+            <button class="hm-pill active" data-value="0">All Events</button>
+            <button class="hm-pill brake"  data-value="1">Braking</button>
+            <button class="hm-pill accel"  data-value="2">Acceleration</button>
+            <button class="hm-pill turn"   data-value="3">Turning</button>
+          </div>
+        </div>
+
+        <div class="hm-section">
+          <div class="hm-label">Speed Bracket</div>
+          <div class="hm-pills" id="hm-speed-pills">
+            <button class="hm-pill active" data-value="0">All Speeds</button>
+            <button class="hm-pill"        data-value="1">0 – 60 km/h</button>
+            <button class="hm-pill"        data-value="2">61 – 100 km/h</button>
+            <button class="hm-pill"        data-value="3">100 + km/h</button>
+          </div>
+        </div>
+
+        <div class="hm-section">
+          <div class="hm-label hm-hour-label">
+            Hour of Day
+            <span id="hm-hour-display" class="hm-hour-display">All hours</span>
+          </div>
+          <input type="range" id="hm-hour-slider" class="hm-slider"
+                 min="0" max="24" value="24" step="1"
+                 title="0–23 = specific Bangkok hour; 24 = all hours"/>
+          <div class="hm-hour-ticks">
+            <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>All</span>
+          </div>
+        </div>
+
+        <div class="hm-footer">
+          <span id="hm-point-count" class="hm-count">— events</span>
+          <span id="hm-loading" class="hm-loading hidden">Loading…</span>
+        </div>
+      </div>
+      <div id="legend">
+        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#3b82f6"/></svg> Normal</div>
+        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#0d9488"/></svg> Accelerating</div>
+        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#f59e0b"/></svg> Braking</div>
+        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#8b5cf6"/></svg> Sharp Turn</div>
+        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#dc2626"/></svg> Collision</div>
+        <div class="leg-item" style="margin-top:4px;border-top:1px solid rgba(255,255,255,.15);padding-top:4px">
+          <span class="leg-dot" style="background:#f59e0b"></span> Low Impact</div>
+        <div class="leg-item"><span class="leg-dot" style="background:#f97316"></span> Medium Impact</div>
+        <div class="leg-item"><span class="leg-dot" style="background:#dc2626"></span> High Impact</div>
+      </div>
+      <div id="status-panel">
+        <div class="sp-title">Vehicles in View: <span id="sp-total">0</span></div>
+        <div class="sp-row"><span><span class="sp-dot" style="background:#3b82f6"></span>Normal</span><span class="sp-count" id="sp-normal">0</span></div>
+        <div class="sp-row"><span><span class="sp-dot" style="background:#0d9488"></span>Accelerating</span><span class="sp-count" id="sp-accel">0</span></div>
+        <div class="sp-row"><span><span class="sp-dot" style="background:#f59e0b"></span>Braking</span><span class="sp-count" id="sp-brake">0</span></div>
+        <div class="sp-row"><span><span class="sp-dot" style="background:#8b5cf6"></span>Sharp Turn</span><span class="sp-count" id="sp-turn">0</span></div>
+        <div class="sp-row"><span><span class="sp-dot" style="background:#dc2626"></span>Collision</span><span class="sp-count" id="sp-collision">0</span></div>
+      </div>
+    </div>
+
+    <aside id="analytics">
+      <div id="analytics-header">Analytics</div>
+
+      <!-- Risk Score — headline metric, shown first -->
+      <div class="card">
+        <div class="card-title">Risk Score</div>
+        <canvas id="gauge" width="260" height="70" style="width:100%;height:70px;display:block"></canvas>
+        <p id="risk-label" class="risk-label risk-low">RISK: LOW</p>
+        <div id="risk-detail" class="risk-detail"></div>
+      </div>
+
+      <!-- Event breakdown -->
+      <div class="card">
+        <div class="card-title">Event Type Breakdown</div>
+        <div class="chart-wrap" style="height:105px"><canvas id="chart-events"></canvas></div>
+      </div>
+
+      <!-- Crash frequency -->
+      <div class="card">
+        <div class="card-title">Crash Frequency Over Time</div>
+        <div class="chart-wrap" style="height:75px"><canvas id="chart-freq"></canvas></div>
+      </div>
+
+      <!-- Before vs After -->
+      <div class="card" id="card-ba">
+        <div class="card-title">Before vs After Countermeasure</div>
+        <div class="ba-row" id="ba-row" style="display:none">
+          <div class="ba-col"><div class="ba-col-title">Crashes</div><div class="chart-wrap" style="height:90px"><canvas id="chart-ba-events"></canvas></div></div>
+          <div class="ba-col"><div class="ba-col-title">Events</div><div class="chart-wrap" style="height:90px"><canvas id="chart-ba-risk"></canvas></div></div>
+        </div>
+        <div id="ba-placeholder" class="placeholder">Set countermeasure date to compare</div>
+        <div class="cm-row">
+          <span class="cm-label">Date:</span>
+          <input type="date" id="cm-date" class="cm-input"/>
+          <button id="cm-apply" class="cm-btn">Apply</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Per-section breakdown (Road Focus mode only) -->
+  <section id="section-panel" class="hidden" aria-label="Per-section analytics for Kamphaeng Phet 6 Rd">
+    <div class="section-panel-header">
+      <span class="sp-title-text">Kamphaeng Phet 6 · Per-Section Breakdown</span>
+      <span class="sp-hint">Click a card to focus that section on the map</span>
+    </div>
+    <div class="section-grid" id="section-grid">
+      <!-- Section tiles injected by dashboard.js -->
+    </div>
+  </section>
+
+  <!-- Bottom bar -->
+  <footer id="bottom-bar">
+    <div class="tl-row">
+      <span class="tl-date" id="tl-start">—</span>
+      <input type="range" id="timeline" min="0" max="1000" value="0" step="1"/>
+      <span class="tl-date right" id="tl-end">—</span>
+    </div>
+    <div class="ctrl-row">
+      <button class="ctrl-btn" id="btn-pause" title="Pause">&#9646;&#9646;</button>
+      <button class="ctrl-btn active" id="btn-play" title="Play">&#9654;</button>
+      <button class="ctrl-btn" id="btn-stop" title="Stop">&#9632;</button>
+      <div class="ctrl-div"></div>
+      <button class="ctrl-btn" id="btn-prev" title="Step back">&#9665;</button>
+      <button class="ctrl-btn" id="btn-next" title="Step forward">&#9655;</button>
+      <div class="ctrl-div"></div>
+      <span id="ts-display">—</span>
+      <div class="ctrl-div"></div>
+      <!-- Precision time jump (NEW) -->
+      <input type="datetime-local" id="time-jump-input" class="time-jump-input" step="1" title="Jump to exact time"/>
+      <button id="btn-time-jump" class="ctrl-btn time-jump-btn" title="Jump to specified time">Go</button>
+      <div class="ctrl-div"></div>
+      <span class="tb-label" style="color:#94a3b8;font-size:10px">Speed:</span>
+      <select id="speed-select" class="speed-select" title="Playback speed (data time per wall-second)">
+        <option value="1">1 sec/s (real-time)</option>
+        <option value="15">15 sec/s</option>
+        <option value="30">30 sec/s</option>
+        <option value="60" selected>1 min/s</option>
+        <option value="300">5 min/s</option>
+        <option value="600">10 min/s</option>
+        <option value="1800">30 min/s</option>
+      </select>
+    </div>
+  </footer>
+</div>
+<script src="/dashboard.js"></script>
+</body>
+</html>

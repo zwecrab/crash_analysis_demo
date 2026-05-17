@@ -1,0 +1,28 @@
+# Environment / secrets — never commit credentials
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.bat/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files (often too large for git)
+*.parquet
+*.csv
+*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DuckDB temporary database files
+sensor_local.duckdb.tmp/
+*.duckdb.wal
+*.duckdb.tmp
+
