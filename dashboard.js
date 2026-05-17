@@ -1324,10 +1324,12 @@ function toggleMapStyle(){
   S.mapStyle=to;
   map.removeLayer(baseTileLayer);
   const url=to==='light'
-    ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
+    ? 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}'
     : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  const subdomains=to==='light'?['mt0','mt1','mt2','mt3']:'abcd';
   baseTileLayer=L.tileLayer(url,{
-    attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19}).addTo(map);
+    attribution:to==='light'?'&copy; Google':'&copy; OSM &copy; CARTO',
+    subdomains:subdomains,maxZoom:20}).addTo(map);
   baseTileLayer.bringToBack();
   if(S.mode==='road'){
     drawRoadGeometry();
@@ -1338,7 +1340,7 @@ function toggleMapStyle(){
   }
   const btn=document.getElementById('btn-map-toggle');
   if(btn){
-    btn.textContent=to==='light'?'🗺️ Normal Map':'🌙 Dark Mode';
+    btn.textContent=to==='light'?'🗺️ Google Map':'🌙 Dark Mode';
     btn.classList.toggle('active',to==='light');
   }
 }
