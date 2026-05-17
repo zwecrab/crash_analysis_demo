@@ -45,6 +45,19 @@ def _load_road_polygons():
 
 _ROAD_POLYGONS = _load_road_polygons()
 
+def _load_road_sections():
+    path = os.path.join(_DIR, "road.json")
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+                return {s["id"]: s["polygon"] for s in data.get("sections", [])}
+        except Exception as e:
+            print(f"[app] Error loading road.json sections: {e}")
+    return {}
+
+_ROAD_SECTIONS = _load_road_sections()
+
 def _point_in_polygon(lat, lon, poly):
     inside = False
     n = len(poly)
@@ -340,6 +353,7 @@ def get_accidents(
     lat_min: float = Query(...), lat_max: float = Query(...),
     lon_min: float = Query(...), lon_max: float = Query(...),
     t_start: str = Query(...), t_end: str = Query(...),
+    section_id: Optional[str] = Query(None, description="Section ID (A, B, C or 'all') to filter precisely by polygon"),
 ):
     """Collision events with severity and human labels."""
     conn = _conn(); cur = conn.cursor()
@@ -357,9 +371,26 @@ def get_accidents(
     rows = cur.fetchall()
     cur.close(); conn.close()
 
+    # Precise point-in-polygon filtering for road mode
+    filtered_rows = []
+    if section_id:
+        if section_id == "all":
+            for r in rows:
+                if any(_point_in_polygon(r[2], r[3], poly) for poly in _ROAD_SECTIONS.values()):
+                    filtered_rows.append(r)
+        elif section_id in _ROAD_SECTIONS:
+            poly = _ROAD_SECTIONS[section_id]
+            for r in rows:
+                if _point_in_polygon(r[2], r[3], poly):
+                    filtered_rows.append(r)
+        else:
+            filtered_rows = rows
+    else:
+        filtered_rows = rows
+
     accidents = []
     vin_first: dict[str, str] = {}
-    for vin, ts, la, lo, ct, gx, gy, spd in rows:
+    for vin, ts, la, lo, ct, gx, gy, spd in filtered_rows:
         ts_str = ts.isoformat() + "Z"  # UTC-explicit
         accidents.append({
             "vin": vin, "timestamp": ts_str,
@@ -381,6 +412,7 @@ def get_analytics(
     t_start: Optional[str] = Query(None),
     t_end:   Optional[str] = Query(None),
     countermeasure_date: Optional[str] = Query(None),
+    section_id: Optional[str] = Query(None, description="Section ID (A, B, C or 'all') to filter precisely by polygon"),
 ):
     """Event breakdown, crash frequency, before/after, risk score."""
     conn = _conn(); cur = conn.cursor()
@@ -389,59 +421,78 @@ def get_analytics(
     time_sql = "AND timestamp BETWEEN %s AND %s" if (t_start and t_end) else ""
     tp = (t_start, t_end) if (t_start and t_end) else ()
 
-    # 1. Crash frequency (daily) — fill every date with 0 so the chart
-    #    x-axis has no unexplained gaps between days with events.
+    # Fetch all behavior events and collisions in the bounding box and timeframe
     cur.execute(f"""
-        SELECT DATE_TRUNC('day', timestamp)::date, COUNT(*)
-        FROM sensor WHERE collision_type IS NOT NULL
+        SELECT timestamp, lat::float, lon::float, event_type, collision_type
+        FROM sensor
+        WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
           AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
-        GROUP BY 1 ORDER BY 1 LIMIT 365
     """, bp + tp)
-    freq_raw = cur.fetchall()
-    # Build a dense date series
-    from datetime import date as _date
-    freq_map = {r[0]: r[1] for r in freq_raw}
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+
+    # Precise point-in-polygon filtering for road mode in memory
+    filtered_rows = []
+    if section_id:
+        if section_id == "all":
+            for r in rows:
+                if any(_point_in_polygon(r[1], r[2], poly) for poly in _ROAD_SECTIONS.values()):
+                    filtered_rows.append(r)
+        elif section_id in _ROAD_SECTIONS:
+            poly = _ROAD_SECTIONS[section_id]
+            for r in rows:
+                if _point_in_polygon(r[1], r[2], poly):
+                    filtered_rows.append(r)
+        else:
+            filtered_rows = rows
+    else:
+        filtered_rows = rows
+
+    # 1. Crash frequency (daily)
+    freq_map = {}
+    for ts, lat, lon, et, ct in filtered_rows:
+        if ct is not None:
+            day = ts.date()
+            freq_map[day] = freq_map.get(day, 0) + 1
+
+    # 1b. Daily driving events
+    ev_map = {}
+    for ts, lat, lon, et, ct in filtered_rows:
+        if et is not None:
+            day = ts.date()
+            ev_map[day] = ev_map.get(day, 0) + 1
+
+    # Dense back-fill date series
     if t_start and t_end:
         d_lo = datetime.fromisoformat(t_start.replace("Z","")).date()
         d_hi = datetime.fromisoformat(t_end.replace("Z","")).date()
-    elif freq_map:
-        d_lo, d_hi = min(freq_map.keys()), max(freq_map.keys())
+    elif freq_map or ev_map:
+        all_dates = list(freq_map.keys()) + list(ev_map.keys())
+        d_lo, d_hi = min(all_dates), max(all_dates)
     else:
         d_lo = d_hi = datetime.utcnow().date()
+
     crash_freq, cur_day = [], d_lo
     while cur_day <= d_hi:
         crash_freq.append({"date": str(cur_day), "count": int(freq_map.get(cur_day, 0))})
         cur_day += timedelta(days=1)
 
-    # 1b. Daily driving events — powers the per-day risk score that updates
-    #     as playback advances through the timeline.  Same dense back-fill as
-    #     crash_freq so the two series align one-to-one on date.
-    cur.execute(f"""
-        SELECT DATE_TRUNC('day', timestamp)::date, COUNT(*)
-        FROM sensor WHERE event_type IS NOT NULL
-          AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
-        GROUP BY 1 ORDER BY 1 LIMIT 365
-    """, bp + tp)
-    ev_raw = cur.fetchall()
-    ev_map = {r[0]: r[1] for r in ev_raw}
     daily_events, cur_day = [], d_lo
     while cur_day <= d_hi:
         daily_events.append({"date": str(cur_day), "count": int(ev_map.get(cur_day, 0))})
         cur_day += timedelta(days=1)
 
-    # 2. Event breakdown (FIXED: actual values 1, 2, 3)
-    cur.execute(f"""
-        SELECT
-          SUM(CASE WHEN event_type = 1 THEN 1 ELSE 0 END),
-          SUM(CASE WHEN event_type = 2 THEN 1 ELSE 0 END),
-          SUM(CASE WHEN event_type = 3 THEN 1 ELSE 0 END),
-          SUM(CASE WHEN collision_type IS NOT NULL THEN 1 ELSE 0 END)
-        FROM sensor
-        WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
-          AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
-    """, bp + tp)
-    eb = cur.fetchone()
-    hb, sa, st, co = (eb[0] or 0), (eb[1] or 0), (eb[2] or 0), (eb[3] or 0)
+    # 2. Event breakdown
+    hb, sa, st, co = 0, 0, 0, 0
+    for ts, lat, lon, et, ct in filtered_rows:
+        if et == 1:
+            hb += 1
+        elif et == 2:
+            sa += 1
+        elif et == 3:
+            st += 1
+        if ct is not None:
+            co += 1
     tot = max(hb + sa + st + co, 1)
     event_breakdown = {
         "harsh_brake":   {"count": hb, "pct": round(hb/tot*100), "label": "Harsh Braking"},
@@ -450,55 +501,44 @@ def get_analytics(
         "collision":     {"count": co, "pct": round(co/tot*100), "label": "Collision"},
     }
 
-    # 3. Before / After
+    # 3. Before / After Countermeasure Comparison
     before_after = None
     if countermeasure_date:
-        cur.execute("""
-            SELECT
-              SUM(CASE WHEN timestamp < %s THEN 1 ELSE 0 END),
-              SUM(CASE WHEN timestamp >= %s THEN 1 ELSE 0 END)
-            FROM sensor WHERE collision_type IS NOT NULL
-              AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s
-        """, (countermeasure_date, countermeasure_date) + bp)
-        row = cur.fetchone()
-        bc, ac = (row[0] or 0), (row[1] or 0)
-        # Also count driving events
-        cur.execute("""
-            SELECT
-              SUM(CASE WHEN timestamp < %s THEN 1 ELSE 0 END),
-              SUM(CASE WHEN timestamp >= %s THEN 1 ELSE 0 END)
-            FROM sensor WHERE event_type IS NOT NULL
-              AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s
-        """, (countermeasure_date, countermeasure_date) + bp)
-        erow = cur.fetchone()
-        eb_before, eb_after = (erow[0] or 0), (erow[1] or 0)
+        cm_dt = datetime.fromisoformat(countermeasure_date.replace("Z", ""))
+        bc, ac = 0, 0
+        eb_before, eb_after = 0, 0
+        for ts, lat, lon, et, ct in filtered_rows:
+            if ct is not None:
+                if ts < cm_dt:
+                    bc += 1
+                else:
+                    ac += 1
+            if et is not None:
+                if ts < cm_dt:
+                    eb_before += 1
+                else:
+                    eb_after += 1
         before_after = {
             "before": {"crashes": bc, "events": eb_before},
             "after":  {"crashes": ac, "events": eb_after},
             "countermeasure_date": countermeasure_date,
         }
 
-    # 4. Risk score — weighted by collision rate + event rate.
-    #    Old formula (events/days * 0.05) always saturated at 10.0 because
-    #    a 700 m² study area logs 1 400+ events/day.  New formula:
-    #      base   = collision rate * 10  (0.4 crashes/day → 4.0 pts)
-    #      bonus  = event rate * 0.001   (1 400 events/day → 1.4 pts)
-    #    Typical result: ~5.5 (MEDIUM) — leaves headroom for worse sites.
+    # 4. Risk score
     if t_start and t_end:
         days = max((datetime.fromisoformat(t_end.replace("Z","")) - datetime.fromisoformat(t_start.replace("Z",""))).days, 1)
     else:
-        days = 60  # safe fallback
+        days = 60
     collision_rate = co / days
     event_rate = (hb + sa + st) / days
     risk_score = round(min(10.0, collision_rate * 10 + event_rate * 0.001), 1)
 
-    cur.close(); conn.close()
     return {
         "crash_frequency": crash_freq,
         "daily_events":    daily_events,
         "event_breakdown": event_breakdown,
         "before_after":    before_after,
-        "risk_score":      risk_score,   # kept for backwards-compat / whole-range view
+        "risk_score":      risk_score,
     }
 
 

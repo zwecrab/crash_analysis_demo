@@ -392,6 +392,16 @@ html,body{
   color:var(--ink);
   letter-spacing:.002em;
 }
+.header-sub{
+  font-size:11.5px;
+  font-weight:400;
+  color:var(--ink-muted);
+  display:block;
+  margin-top:3px;
+  font-family:var(--font-sans);
+  text-transform:none;
+  letter-spacing:normal;
+}
 .card{
   background:var(--bg-paper-hi);
   border-bottom:1px solid var(--border-paper);
