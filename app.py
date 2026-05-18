@@ -57,13 +57,66 @@ def _point_in_polygon(lat, lon, poly):
             inside = not inside
     return inside
 
+# ── DuckDB: download from Dropbox/URL if DATABASE_DOWNLOAD_URL is set ────────
+def _maybe_download_duckdb() -> str | None:
+    """Download sensor_local.duckdb from DATABASE_DOWNLOAD_URL secret if needed.
+
+    Tries /data/ first (HF persistent storage — survives restarts),
+    then /tmp/ (ephemeral fallback). Skips download if file already exists.
+    Returns the local path on success, None otherwise.
+    """
+    import urllib.request
+
+    url = os.getenv("DATABASE_DOWNLOAD_URL")
+    if not url:
+        return None
+
+    destinations = ["/data/sensor_local.duckdb", "/tmp/sensor_local.duckdb"]
+
+    for dest in destinations:
+        # Already downloaded — reuse it
+        if os.path.exists(dest):
+            mb = os.path.getsize(dest) / 1_000_000
+            print(f"[app] DuckDB already present at {dest} ({mb:.0f} MB) — skipping download")
+            return dest
+
+        dest_dir = os.path.dirname(dest)
+        if not (os.path.isdir(dest_dir) and os.access(dest_dir, os.W_OK)):
+            print(f"[app] {dest_dir} not writable, trying next location")
+            continue
+
+        print(f"[app] Downloading DuckDB → {dest} ...")
+        try:
+            def _log_progress(block_count, block_size, total_size):
+                if total_size <= 0 or block_count % 500 != 0:
+                    return
+                done = min(block_count * block_size, total_size)
+                pct  = done / total_size * 100
+                print(f"[app]   {done / 1_000_000:.0f} / {total_size / 1_000_000:.0f} MB  ({pct:.0f}%)")
+
+            urllib.request.urlretrieve(url, dest, reporthook=_log_progress)
+            mb = os.path.getsize(dest) / 1_000_000
+            print(f"[app] Download complete: {mb:.0f} MB → {dest}")
+            return dest
+        except Exception as exc:
+            print(f"[app] Download to {dest} failed: {exc}")
+            if os.path.exists(dest):
+                os.remove(dest)   # remove partial file
+
+    print("[app] DuckDB download failed — no writable destination found")
+    return None
+
+
 # ── DuckDB local mode ─────────────────────────────────────────
 # Search order:
 #   1. LOCAL_DB_PATH env var (explicit override)
-#   2. Same folder as app.py  (local dev)
-#   3. /data/sensor_local.duckdb  (HuggingFace persistent storage)
+#   2. DATABASE_DOWNLOAD_URL secret → download to /data/ or /tmp/
+#   3. Same folder as app.py (local dev)
+#   4. /data/sensor_local.duckdb (HF persistent storage, pre-placed)
+_downloaded = _maybe_download_duckdb()
 _DUCK_CANDIDATES = [
     os.getenv("LOCAL_DB_PATH"),
+    _downloaded,
     os.path.join(_DIR, "sensor_local.duckdb"),
     "/data/sensor_local.duckdb",
 ]
