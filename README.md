@@ -1,13 +1,3 @@
----
-title: Crash Risk Analysis Dashboard
-emoji: 🚗
-colorFrom: red
-colorTo: gray
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # L-DCM Crash Risk Analysis Dashboard
 
 Interactive before/after countermeasure study tool for Toyota L-DCM vehicle telemetry at Thailand blackspot locations. FastAPI backend + Leaflet / Chart.js frontend with a warm, editorial Claude-inspired UI.

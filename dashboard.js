@@ -16,7 +16,6 @@ const S={tStartMs:null,tEndMs:null,curMs:null,playing:false,timer:null,
   dailyCrashes:null,dailyEvents:null,lastRiskDay:null,
   // Road-Focus mode (Kamphaeng Phet 6 Rd partitioned into sections A/B/C)
   mode:'full',road:null,  // mode: 'full' | 'road' | 'heatmap'
-  mapStyle:'dark',
   roadRects:[],roadLabels:[],roadMask:null,
   activeSection:null,
   sectionAnalytics:{},                                  // {A:{...},B:{...},C:{...}}
@@ -45,7 +44,7 @@ function circleLatLngs(lat,lng,radiusM){
 
 /* ── Map ───────────────────────────────────────────────── */
 const map=L.map('map',{zoomControl:true,preferCanvas:true});
-let baseTileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19}).addTo(map);
 
 /* ── Helpers ───────────────────────────────────────────── */
@@ -156,9 +155,6 @@ async function fetchAccidents(){
   const bb=activeBbox();
   const p=new URLSearchParams({lat_min:bb.lat_min,lat_max:bb.lat_max,lon_min:bb.lon_min,lon_max:bb.lon_max,
     t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
-  if(S.mode==='road'){
-    p.set('section_id',S.activeSection||'all');
-  }
   const d=await api('/api/accidents?'+p);
   S.accidents=d.accidents||[];S.accidentVins=d.accident_vins||{};
   updateTypeFilterOptions();
@@ -171,9 +167,6 @@ async function fetchAnalytics(){
     t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
   const cm=document.getElementById('cm-date').value;
   if(cm)p.set('countermeasure_date',cm);
-  if(S.mode==='road'){
-    p.set('section_id',S.activeSection||'all');
-  }
   return api('/api/analytics?'+p);
 }
 
@@ -192,7 +185,6 @@ async function fetchSectionAnalytics(){
       lon_min:s.lon_min,lon_max:s.lon_max,
       t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
     if(cm)p.set('countermeasure_date',cm);
-    p.set('section_id',s.id);
     const t0=performance.now();
     try{
       const d=await api('/api/analytics?'+p);
@@ -441,24 +433,7 @@ function drawGauge(score){
   ctx.font=`700 ${Math.round(H*.27)}px Inter,system-ui`;ctx.fillStyle='#1e293b';ctx.fillText(score.toFixed(1),cx,cy-r*.4);
 }
 
-function updateAnalyticsHeader(){
-  const header=document.getElementById('analytics-header');
-  if(!header)return;
-  if(S.mode==='road'){
-    if(S.activeSection){
-      const sec=S.road&&S.road.sections.find(s=>s.id===S.activeSection);
-      const label=sec?sec.label:'';
-      header.innerHTML=`Analytics <span class="header-sub">· Section ${S.activeSection} (${label})</span>`;
-    }else{
-      header.innerHTML=`Analytics <span class="header-sub">· Kamphaeng Phet 6 Corridor</span>`;
-    }
-  }else{
-    header.innerHTML=`Analytics <span class="header-sub">· Full Map Area</span>`;
-  }
-}
-
 function updateCharts(d){
-  updateAnalyticsHeader();
   if(d.before_after){
     document.getElementById('ba-placeholder').style.display='none';
     document.getElementById('ba-row').style.display='flex';
@@ -529,7 +504,7 @@ function createCircle(lat,lng,radius){
   const outerRing=[[-90,-360],[-90,360],[90,360],[90,-360]];
   const innerRing=circleLatLngs(lat,lng,radius);
   S.mask=L.polygon([outerRing,innerRing],{
-    color:'none',fillColor:S.mapStyle==='light'?'#faf7f2':'#0f172a',fillOpacity:S.mapStyle==='light'?0.65:0.76,
+    color:'none',fillColor:'#0f172a',fillOpacity:0.76,
     interactive:false,smoothFactor:1
   }).addTo(map);
 
@@ -851,7 +826,7 @@ function drawRoadGeometry(){
     [s.lat_max,s.lon_max],[s.lat_max,s.lon_min]
   ]);
   S.roadMask=L.polygon([outerRing,...holes],{
-    color:'none',fillColor:S.mapStyle==='light'?'#faf7f2':'#0f0d0b',fillOpacity:S.mapStyle==='light'?.62:.78,
+    color:'none',fillColor:'#0f0d0b',fillOpacity:.78,
     interactive:false,smoothFactor:1
   }).addTo(map);
 
@@ -1319,32 +1294,9 @@ document.getElementById('speed-select').addEventListener('change',function(){
 });
 document.getElementById('cm-apply').addEventListener('click',async()=>{
   try{const d=await fetchAnalytics();updateCharts(d)}catch(e){console.error(e)}});
-function toggleMapStyle(){
-  const to=S.mapStyle==='dark'?'light':'dark';
-  S.mapStyle=to;
-  map.removeLayer(baseTileLayer);
-  const url=to==='light'
-    ? 'https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en'
-    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-  const subdomains=to==='light'?['mt0','mt1','mt2','mt3']:'abcd';
-  baseTileLayer=L.tileLayer(url,{
-    attribution:to==='light'?'&copy; Google':'&copy; OSM &copy; CARTO',
-    subdomains:subdomains,maxZoom:20}).addTo(map);
-  baseTileLayer.bringToBack();
-  if(S.mode==='road'){
-    drawRoadGeometry();
-  }else if(S.mode==='full'){
-    if(S.circleCenter){
-      createCircle(S.circleCenter.lat,S.circleCenter.lng,S.radiusM);
-    }
-  }
-  const btn=document.getElementById('btn-map-toggle');
-  if(btn){
-    btn.textContent=to==='light'?'🗺️ Google Map':'🌙 Dark Mode';
-    btn.classList.toggle('active',to==='light');
-  }
-}
-document.getElementById('btn-map-toggle').addEventListener('click',toggleMapStyle);
+document.getElementById('btn-predict').addEventListener('click',async function(){
+  try{const r=await(await fetch('/api/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+    alert(r.message||'Prediction model not ready')}catch(e){alert('Prediction endpoint error')}});
 
 /* Collision panel wiring */
 document.getElementById('collision-severity-filter').addEventListener('change',function(){

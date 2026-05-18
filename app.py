@@ -45,19 +45,6 @@ def _load_road_polygons():
 
 _ROAD_POLYGONS = _load_road_polygons()
 
-def _load_road_sections():
-    path = os.path.join(_DIR, "road.json")
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                data = json.load(f)
-                return {s["id"]: s["polygon"] for s in data.get("sections", [])}
-        except Exception as e:
-            print(f"[app] Error loading road.json sections: {e}")
-    return {}
-
-_ROAD_SECTIONS = _load_road_sections()
-
 def _point_in_polygon(lat, lon, poly):
     inside = False
     n = len(poly)
@@ -75,30 +62,6 @@ def _point_in_polygon(lat, lon, poly):
 # Build it once with:  python export_to_duckdb.py
 # Or set LOCAL_DB_PATH in .env to point elsewhere.
 _LOCAL_DB  = os.getenv("LOCAL_DB_PATH", os.path.join(_DIR, "sensor_local.duckdb"))
-
-# ── Cloud DB Downloader (Bypasses 1 GB Git limit on Hugging Face Spaces) ──────
-_DOWNLOAD_URL = os.getenv("DATABASE_DOWNLOAD_URL")
-if not os.path.exists(_LOCAL_DB) and _DOWNLOAD_URL:
-    print(f"[app] local database file not found. Initiating cloud download from secret storage...")
-    try:
-        import urllib.request, sys
-        def _download_progress(blocknum, blocksize, totalsize):
-            readsofar = blocknum * blocksize
-            if totalsize > 0:
-                percent = min(100.0, readsofar * 100.0 / totalsize)
-                sys.stdout.write(f"\r[app] Download Progress: {percent:.1f}% ({readsofar//(1024*1024)} MB / {totalsize//(1024*1024)} MB)")
-                sys.stdout.flush()
-            else:
-                sys.stdout.write(f"\r[app] Downloaded: {readsofar//(1024*1024)} MB")
-                sys.stdout.flush()
-        
-        temp_download_path = _LOCAL_DB + ".downloading"
-        urllib.request.urlretrieve(_DOWNLOAD_URL, temp_download_path, _download_progress)
-        os.rename(temp_download_path, _LOCAL_DB)
-        print(f"\n[app] Database download completed successfully!")
-    except Exception as e:
-        print(f"\n[app] ERROR downloading database: {e}")
-
 _USE_DUCK  = os.path.exists(_LOCAL_DB)
 
 if _USE_DUCK:
@@ -353,7 +316,6 @@ def get_accidents(
     lat_min: float = Query(...), lat_max: float = Query(...),
     lon_min: float = Query(...), lon_max: float = Query(...),
     t_start: str = Query(...), t_end: str = Query(...),
-    section_id: Optional[str] = Query(None, description="Section ID (A, B, C or 'all') to filter precisely by polygon"),
 ):
     """Collision events with severity and human labels."""
     conn = _conn(); cur = conn.cursor()
@@ -371,26 +333,9 @@ def get_accidents(
     rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # Precise point-in-polygon filtering for road mode
-    filtered_rows = []
-    if section_id:
-        if section_id == "all":
-            for r in rows:
-                if any(_point_in_polygon(r[2], r[3], poly) for poly in _ROAD_SECTIONS.values()):
-                    filtered_rows.append(r)
-        elif section_id in _ROAD_SECTIONS:
-            poly = _ROAD_SECTIONS[section_id]
-            for r in rows:
-                if _point_in_polygon(r[2], r[3], poly):
-                    filtered_rows.append(r)
-        else:
-            filtered_rows = rows
-    else:
-        filtered_rows = rows
-
     accidents = []
     vin_first: dict[str, str] = {}
-    for vin, ts, la, lo, ct, gx, gy, spd in filtered_rows:
+    for vin, ts, la, lo, ct, gx, gy, spd in rows:
         ts_str = ts.isoformat() + "Z"  # UTC-explicit
         accidents.append({
             "vin": vin, "timestamp": ts_str,
@@ -412,126 +357,110 @@ def get_analytics(
     t_start: Optional[str] = Query(None),
     t_end:   Optional[str] = Query(None),
     countermeasure_date: Optional[str] = Query(None),
-    section_id: Optional[str] = Query(None, description="Section ID (A, B, C or 'all') to filter precisely by polygon"),
 ):
-    """Event breakdown, crash frequency, before/after, risk score."""
+    """Event breakdown, crash frequency, before/after, risk score.
+
+    Option B polygon fix: fetch all event/collision rows from the bbox once,
+    then apply the same _point_in_polygon filter used by /api/heatmap.
+    This eliminates the 1-2 count discrepancy caused by overlapping section
+    bounding boxes double-counting events at section boundaries.
+    Falls back to bbox-only when no road polygons are configured.
+    """
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '25000'")
     bp = (lat_min, lat_max, lon_min, lon_max)
     time_sql = "AND timestamp BETWEEN %s AND %s" if (t_start and t_end) else ""
     tp = (t_start, t_end) if (t_start and t_end) else ()
 
-    # Fetch all behavior events and collisions in the bounding box and timeframe
+    # ── Single pre-fetch: all event/collision rows inside the bbox ──────────
+    # bbox is the fast index pre-filter; polygon check below refines it.
+    # Only event rows are fetched (~few thousand), never the full 91 M table.
     cur.execute(f"""
         SELECT timestamp, lat::float, lon::float, event_type, collision_type
         FROM sensor
         WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
           AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
+        ORDER BY timestamp
     """, bp + tp)
-    rows = cur.fetchall()
+    raw_rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # Precise point-in-polygon filtering for road mode in memory
-    filtered_rows = []
-    if section_id:
-        if section_id == "all":
-            for r in rows:
-                if any(_point_in_polygon(r[1], r[2], poly) for poly in _ROAD_SECTIONS.values()):
-                    filtered_rows.append(r)
-        elif section_id in _ROAD_SECTIONS:
-            poly = _ROAD_SECTIONS[section_id]
-            for r in rows:
-                if _point_in_polygon(r[1], r[2], poly):
-                    filtered_rows.append(r)
-        else:
-            filtered_rows = rows
-    else:
-        filtered_rows = rows
+    # ── Polygon filter (mirrors /api/heatmap) ───────────────────────────────
+    # If no polygons are configured the function returns True for every point,
+    # preserving the original bbox-only behaviour for unconfigured deployments.
+    def _in_road(la, lo):
+        if not _ROAD_POLYGONS:
+            return True
+        for poly in _ROAD_POLYGONS:
+            if _point_in_polygon(la, lo, poly):
+                return True
+        return False
 
-    # 1. Crash frequency (daily)
-    freq_map = {}
-    for ts, lat, lon, et, ct in filtered_rows:
+    rows = [(ts, la, lo, et, ct)
+            for ts, la, lo, et, ct in raw_rows
+            if _in_road(la, lo)]
+
+    # ── 1. Crash frequency & daily events (dense date fill) ─────────────────
+    freq_map: dict = {}
+    ev_map:   dict = {}
+    for ts, _la, _lo, et, ct in rows:
+        d = ts.date()
         if ct is not None:
-            day = ts.date()
-            freq_map[day] = freq_map.get(day, 0) + 1
-
-    # 1b. Daily driving events
-    ev_map = {}
-    for ts, lat, lon, et, ct in filtered_rows:
+            freq_map[d] = freq_map.get(d, 0) + 1
         if et is not None:
-            day = ts.date()
-            ev_map[day] = ev_map.get(day, 0) + 1
+            ev_map[d]   = ev_map.get(d, 0) + 1
 
-    # Dense back-fill date series
     if t_start and t_end:
-        d_lo = datetime.fromisoformat(t_start.replace("Z","")).date()
-        d_hi = datetime.fromisoformat(t_end.replace("Z","")).date()
+        d_lo = datetime.fromisoformat(t_start.replace("Z", "")).date()
+        d_hi = datetime.fromisoformat(t_end.replace("Z", "")).date()
     elif freq_map or ev_map:
-        all_dates = list(freq_map.keys()) + list(ev_map.keys())
+        all_dates = list(freq_map) + list(ev_map)
         d_lo, d_hi = min(all_dates), max(all_dates)
     else:
         d_lo = d_hi = datetime.utcnow().date()
 
-    crash_freq, cur_day = [], d_lo
+    crash_freq, daily_events, cur_day = [], [], d_lo
     while cur_day <= d_hi:
         crash_freq.append({"date": str(cur_day), "count": int(freq_map.get(cur_day, 0))})
-        cur_day += timedelta(days=1)
-
-    daily_events, cur_day = [], d_lo
-    while cur_day <= d_hi:
         daily_events.append({"date": str(cur_day), "count": int(ev_map.get(cur_day, 0))})
         cur_day += timedelta(days=1)
 
-    # 2. Event breakdown
-    hb, sa, st, co = 0, 0, 0, 0
-    for ts, lat, lon, et, ct in filtered_rows:
-        if et == 1:
-            hb += 1
-        elif et == 2:
-            sa += 1
-        elif et == 3:
-            st += 1
-        if ct is not None:
-            co += 1
+    # ── 2. Event breakdown ───────────────────────────────────────────────────
+    hb = sum(1 for _, _, _, et, _  in rows if et == 1)
+    sa = sum(1 for _, _, _, et, _  in rows if et == 2)
+    st = sum(1 for _, _, _, et, _  in rows if et == 3)
+    co = sum(1 for _, _, _, _,  ct in rows if ct is not None)
     tot = max(hb + sa + st + co, 1)
     event_breakdown = {
-        "harsh_brake":   {"count": hb, "pct": round(hb/tot*100), "label": "Harsh Braking"},
-        "sudden_accel":  {"count": sa, "pct": round(sa/tot*100), "label": "Sudden Acceleration"},
-        "sharp_turn":    {"count": st, "pct": round(st/tot*100), "label": "Sharp Turn"},
-        "collision":     {"count": co, "pct": round(co/tot*100), "label": "Collision"},
+        "harsh_brake":  {"count": hb, "pct": round(hb / tot * 100), "label": "Harsh Braking"},
+        "sudden_accel": {"count": sa, "pct": round(sa / tot * 100), "label": "Sudden Acceleration"},
+        "sharp_turn":   {"count": st, "pct": round(st / tot * 100), "label": "Sharp Turn"},
+        "collision":    {"count": co, "pct": round(co / tot * 100), "label": "Collision"},
     }
 
-    # 3. Before / After Countermeasure Comparison
+    # ── 3. Before / After ────────────────────────────────────────────────────
     before_after = None
     if countermeasure_date:
         cm_dt = datetime.fromisoformat(countermeasure_date.replace("Z", ""))
-        bc, ac = 0, 0
-        eb_before, eb_after = 0, 0
-        for ts, lat, lon, et, ct in filtered_rows:
-            if ct is not None:
-                if ts < cm_dt:
-                    bc += 1
-                else:
-                    ac += 1
-            if et is not None:
-                if ts < cm_dt:
-                    eb_before += 1
-                else:
-                    eb_after += 1
+        bc        = sum(1 for ts, _, _, _,  ct in rows if ct is not None and ts <  cm_dt)
+        ac        = sum(1 for ts, _, _, _,  ct in rows if ct is not None and ts >= cm_dt)
+        eb_before = sum(1 for ts, _, _, et, _  in rows if et is not None and ts <  cm_dt)
+        eb_after  = sum(1 for ts, _, _, et, _  in rows if et is not None and ts >= cm_dt)
         before_after = {
             "before": {"crashes": bc, "events": eb_before},
             "after":  {"crashes": ac, "events": eb_after},
             "countermeasure_date": countermeasure_date,
         }
 
-    # 4. Risk score
+    # ── 4. Risk score ────────────────────────────────────────────────────────
     if t_start and t_end:
-        days = max((datetime.fromisoformat(t_end.replace("Z","")) - datetime.fromisoformat(t_start.replace("Z",""))).days, 1)
+        days = max((
+            datetime.fromisoformat(t_end.replace("Z", "")) -
+            datetime.fromisoformat(t_start.replace("Z", ""))
+        ).days, 1)
     else:
         days = 60
-    collision_rate = co / days
-    event_rate = (hb + sa + st) / days
-    risk_score = round(min(10.0, collision_rate * 10 + event_rate * 0.001), 1)
+    risk_score = round(min(10.0, (co / days) * 10 + ((hb + sa + st) / days) * 0.001), 1)
 
     return {
         "crash_frequency": crash_freq,

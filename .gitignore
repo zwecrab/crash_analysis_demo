@@ -16,15 +16,15 @@ venv/
 *.parquet
 *.csv
 *.xlsx
+*.duckdb
+*.duckdb.wal
+*.tmp
+sensor_local.duckdb.tmp/
+Dataset/
+
+# Experiment outputs
+Experiment/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# DuckDB temporary database files
-sensor_local.duckdb
-*.duckdb
-sensor_local.duckdb.tmp/
-*.duckdb.wal
-*.duckdb.tmp
-
