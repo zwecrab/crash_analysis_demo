@@ -270,8 +270,8 @@ def get_meta():
     cur.execute("SET statement_timeout = '30000'")
     cur.execute("""
         SELECT MIN(timestamp), MAX(timestamp),
-               MIN(lat)::float, MAX(lat)::float,
-               MIN(lon)::float, MAX(lon)::float
+               MIN(lat)::float8, MAX(lat)::float8,
+               MIN(lon)::float8, MAX(lon)::float8
         FROM sensor
     """)
     row = cur.fetchone()
@@ -337,7 +337,7 @@ def get_trajectory(
         -- Branch 1: normal driving (Basic 0x11 stream).
         -- Modulo-sample so we don't overwhelm the wire; these cars have no
         -- event_type or collision_type so the old single-query LIMIT starved them.
-        (SELECT vin, timestamp, lat::float, lon::float, direction,
+        (SELECT vin, timestamp, lat::float8, lon::float8, direction,
                 vehicle_speed, event_type, collision_type, gx_acci
          FROM sensor
          WHERE timestamp BETWEEN %s AND %s
@@ -353,7 +353,7 @@ def get_trajectory(
 
         -- Branch 2: PHYD events (0x21) and Accident events (0x32).
         -- Always include every event row regardless of modulo.
-        (SELECT vin, timestamp, lat::float, lon::float, direction,
+        (SELECT vin, timestamp, lat::float8, lon::float8, direction,
                 vehicle_speed, event_type, collision_type, gx_acci
          FROM sensor
          WHERE timestamp BETWEEN %s AND %s
@@ -416,7 +416,7 @@ def get_accidents(
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '12000'")
     cur.execute("""
-        SELECT vin, timestamp, lat::float, lon::float,
+        SELECT vin, timestamp, lat::float8, lon::float8,
                collision_type, gx_acci, gy_acci, vehicle_speed
         FROM sensor
         WHERE collision_type IS NOT NULL
@@ -471,7 +471,7 @@ def get_analytics(
     # bbox is the fast index pre-filter; polygon check below refines it.
     # Only event rows are fetched (~few thousand), never the full 91 M table.
     cur.execute(f"""
-        SELECT timestamp, lat::float, lon::float, event_type, collision_type
+        SELECT timestamp, lat::float8, lon::float8, event_type, collision_type
         FROM sensor
         WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
           AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
@@ -592,7 +592,7 @@ def get_vehicle_trajectory(
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '15000'")
     cur.execute("""
-        SELECT timestamp, lat::float, lon::float, direction,
+        SELECT timestamp, lat::float8, lon::float8, direction,
                vehicle_speed, event_type, collision_type, gx_acci
         FROM sensor
         WHERE vin = %s AND timestamp BETWEEN %s AND %s
@@ -666,7 +666,7 @@ def get_heatmap(
         hour_sql = ""    # -1 = all hours
 
     cur.execute(f"""
-        SELECT lat::float, lon::float
+        SELECT lat::float8, lon::float8
         FROM sensor
         WHERE lat  BETWEEN %s AND %s
           AND lon  BETWEEN %s AND %s
@@ -739,7 +739,7 @@ def get_debug():
     # 5 sample rows near the data midpoint
     mid = t_min + (t_max - t_min) / 2
     cur.execute("""
-        SELECT vin, timestamp, lat::float, lon::float, direction,
+        SELECT vin, timestamp, lat::float8, lon::float8, direction,
                vehicle_speed, event_type, collision_type
         FROM sensor WHERE timestamp BETWEEN %s AND %s
         LIMIT 5
