@@ -32,33 +32,52 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 _DIR = os.path.dirname(__file__)
 
 # ── Precise Spatial Boundary Geometry (Kamphaeng Phet 6 Rd) ──
-def _load_road_polygons():
+def _load_road_sections():
     path = os.path.join(_DIR, "road.json")
     if os.path.exists(path):
         try:
             with open(path) as f:
-                data = json.load(f)
-                return [s["polygon"] for s in data.get("sections", [])]
+                return json.load(f).get("sections", [])
         except Exception as e:
-            print(f"[app] Error loading road.json polygons: {e}")
+            print(f"[app] Error loading road.json: {e}")
     return []
 
-_ROAD_POLYGONS = _load_road_polygons()
+_ROAD_SECTIONS = _load_road_sections()
+_ROAD_POLYGONS = [s["polygon"] for s in _ROAD_SECTIONS]
 
-# Pre-compute the combined bounding box of all road polygons.
-# Used in /api/analytics to decide whether to apply polygon filtering:
-# if the request bbox fits inside the road extent → road-focus mode → filter.
-# if the request bbox is larger (circle/general view) → no polygon filter.
-if _ROAD_POLYGONS:
-    _all_pts    = [pt for poly in _ROAD_POLYGONS for pt in poly]
-    _ROAD_BBOX  = {
-        "lat_min": min(p[0] for p in _all_pts),
-        "lat_max": max(p[0] for p in _all_pts),
-        "lon_min": min(p[1] for p in _all_pts),
-        "lon_max": max(p[1] for p in _all_pts),
+# Combined bbox of all sections — used to gate polygon filtering in analytics.
+if _ROAD_SECTIONS:
+    _ROAD_BBOX = {
+        "lat_min": min(s["lat_min"] for s in _ROAD_SECTIONS),
+        "lat_max": max(s["lat_max"] for s in _ROAD_SECTIONS),
+        "lon_min": min(s["lon_min"] for s in _ROAD_SECTIONS),
+        "lon_max": max(s["lon_max"] for s in _ROAD_SECTIONS),
     }
 else:
     _ROAD_BBOX = None
+
+
+def _relevant_polygons(lat_min: float, lat_max: float,
+                       lon_min: float, lon_max: float) -> list:
+    """Return the road polygon(s) relevant for this request bbox.
+
+    Tight tolerance (0.0001 deg ~ 11 m) matches an exact section bbox.
+    If exactly one section matches → use only that section's polygon so
+    per-section analytics are not inflated by the adjacent-section overlap
+    zone (sections B & C share bbox values within 0.001 deg of each other,
+    which broke the earlier looser tolerance).
+    If zero or multiple sections match → fall back to all polygons
+    (combined road view or circle/general view).
+    """
+    _TOL = 0.0001
+    matches = [
+        s for s in _ROAD_SECTIONS
+        if abs(s["lat_min"] - lat_min) <= _TOL
+        and abs(s["lat_max"] - lat_max) <= _TOL
+        and abs(s["lon_min"] - lon_min) <= _TOL
+        and abs(s["lon_max"] - lon_max) <= _TOL
+    ]
+    return [matches[0]["polygon"]] if len(matches) == 1 else _ROAD_POLYGONS
 
 def _point_in_polygon(lat, lon, poly):
     inside = False
@@ -461,10 +480,10 @@ def get_analytics(
     raw_rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # ── Polygon filter — only when request bbox is within the road extent ──────
-    # Full/circle mode sends a wider bbox → no polygon filter (return all rows).
-    # Road-focus mode sends exactly the road bbox → polygon filter applied.
-    # Tolerance of 0.001° (~110 m) absorbs minor floating-point differences.
+    # ── Polygon filter — gated by bbox match, uses only relevant polygon(s) ────
+    # Circle/full view sends a bbox larger than the road extent → no filtering.
+    # Road-focus view sends the road bbox or a single section bbox → filter with
+    # only the matching polygon(s) so per-section counts stay exact.
     _TOL = 0.001
     _road_focused = (
         _ROAD_BBOX is not None
@@ -475,10 +494,11 @@ def get_analytics(
     )
 
     if _road_focused:
+        polys = _relevant_polygons(lat_min, lat_max, lon_min, lon_max)
         rows = [
             (ts, la, lo, et, ct)
             for ts, la, lo, et, ct in raw_rows
-            if any(_point_in_polygon(la, lo, poly) for poly in _ROAD_POLYGONS)
+            if any(_point_in_polygon(la, lo, p) for p in polys)
         ]
     else:
         rows = raw_rows   # circle/general view: all bbox events, no polygon trim
