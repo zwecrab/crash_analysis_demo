@@ -58,16 +58,24 @@ def _point_in_polygon(lat, lon, poly):
     return inside
 
 # ── DuckDB local mode ─────────────────────────────────────────
-# sensor_local.duckdb is auto-detected in the same folder.
-# Build it once with:  python export_to_duckdb.py
-# Or set LOCAL_DB_PATH in .env to point elsewhere.
-_LOCAL_DB  = os.getenv("LOCAL_DB_PATH", os.path.join(_DIR, "sensor_local.duckdb"))
-_USE_DUCK  = os.path.exists(_LOCAL_DB)
+# Search order:
+#   1. LOCAL_DB_PATH env var (explicit override)
+#   2. Same folder as app.py  (local dev)
+#   3. /data/sensor_local.duckdb  (HuggingFace persistent storage)
+_DUCK_CANDIDATES = [
+    os.getenv("LOCAL_DB_PATH"),
+    os.path.join(_DIR, "sensor_local.duckdb"),
+    "/data/sensor_local.duckdb",
+]
+_LOCAL_DB = next((p for p in _DUCK_CANDIDATES if p and os.path.exists(p)), None)
+_USE_DUCK = _LOCAL_DB is not None
 
 if _USE_DUCK:
     import duckdb as _duckdb
     print(f"[app] LOCAL mode — DuckDB: {_LOCAL_DB}")
 else:
+    checked = [p for p in _DUCK_CANDIDATES if p]
+    print(f"[app] DuckDB not found (checked: {checked})")
     print("[app] REMOTE mode — PostgreSQL")
 
 

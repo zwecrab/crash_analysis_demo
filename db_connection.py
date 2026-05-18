@@ -23,10 +23,23 @@ def get_connection(dbname: str = "carcrash"):
     Args:
         dbname: Database name to connect to. Defaults to 'carcrash'.
                 Pass None to use the DB_NAME environment variable instead.
+
+    Raises:
+        RuntimeError: if DB_HOST is not configured (avoids psycopg2 trying
+                      a local Unix socket when the env var is missing).
+        OperationalError: if credentials are set but the connection fails.
     """
+    host = os.getenv("DB_HOST")
+    if not host:
+        raise RuntimeError(
+            "DB_HOST is not set. "
+            "Add DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD as "
+            "environment secrets in the HuggingFace Space settings, "
+            "or ensure sensor_local.duckdb is present at /data/sensor_local.duckdb."
+        )
     try:
         conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
+            host=host,
             port=int(os.getenv("DB_PORT", 5432)),
             dbname=dbname or os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
