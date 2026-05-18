@@ -45,6 +45,21 @@ def _load_road_polygons():
 
 _ROAD_POLYGONS = _load_road_polygons()
 
+# Pre-compute the combined bounding box of all road polygons.
+# Used in /api/analytics to decide whether to apply polygon filtering:
+# if the request bbox fits inside the road extent → road-focus mode → filter.
+# if the request bbox is larger (circle/general view) → no polygon filter.
+if _ROAD_POLYGONS:
+    _all_pts    = [pt for poly in _ROAD_POLYGONS for pt in poly]
+    _ROAD_BBOX  = {
+        "lat_min": min(p[0] for p in _all_pts),
+        "lat_max": max(p[0] for p in _all_pts),
+        "lon_min": min(p[1] for p in _all_pts),
+        "lon_max": max(p[1] for p in _all_pts),
+    }
+else:
+    _ROAD_BBOX = None
+
 def _point_in_polygon(lat, lon, poly):
     inside = False
     n = len(poly)
@@ -446,20 +461,27 @@ def get_analytics(
     raw_rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # ── Polygon filter (mirrors /api/heatmap) ───────────────────────────────
-    # If no polygons are configured the function returns True for every point,
-    # preserving the original bbox-only behaviour for unconfigured deployments.
-    def _in_road(la, lo):
-        if not _ROAD_POLYGONS:
-            return True
-        for poly in _ROAD_POLYGONS:
-            if _point_in_polygon(la, lo, poly):
-                return True
-        return False
+    # ── Polygon filter — only when request bbox is within the road extent ──────
+    # Full/circle mode sends a wider bbox → no polygon filter (return all rows).
+    # Road-focus mode sends exactly the road bbox → polygon filter applied.
+    # Tolerance of 0.001° (~110 m) absorbs minor floating-point differences.
+    _TOL = 0.001
+    _road_focused = (
+        _ROAD_BBOX is not None
+        and lat_min >= _ROAD_BBOX["lat_min"] - _TOL
+        and lat_max <= _ROAD_BBOX["lat_max"] + _TOL
+        and lon_min >= _ROAD_BBOX["lon_min"] - _TOL
+        and lon_max <= _ROAD_BBOX["lon_max"] + _TOL
+    )
 
-    rows = [(ts, la, lo, et, ct)
+    if _road_focused:
+        rows = [
+            (ts, la, lo, et, ct)
             for ts, la, lo, et, ct in raw_rows
-            if _in_road(la, lo)]
+            if any(_point_in_polygon(la, lo, poly) for poly in _ROAD_POLYGONS)
+        ]
+    else:
+        rows = raw_rows   # circle/general view: all bbox events, no polygon trim
 
     # ── 1. Crash frequency & daily events (dense date fill) ─────────────────
     freq_map: dict = {}
