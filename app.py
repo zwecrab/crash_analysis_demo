@@ -224,7 +224,7 @@ def _conn():
     return c
 
 # ── Label maps (human-readable) ──────────────────────────────
-EVENT_LABELS = {1: "Harsh Braking", 2: "Sudden Acceleration", 3: "Sharp Turn"}
+EVENT_LABELS = {1: "Sudden Acceleration", 2: "Harsh Braking", 3: "Sharp Turn"}
 COLLISION_LABELS = {
     16: "Front-Back Collision (filter OFF)",
     17: "Front-Back Collision (Driving)",
@@ -529,8 +529,9 @@ def get_analytics(
         cur_day += timedelta(days=1)
 
     # ── 2. Event breakdown ───────────────────────────────────────────────────
-    hb = sum(1 for _, _, _, et, _  in rows if et == 1)
-    sa = sum(1 for _, _, _, et, _  in rows if et == 2)
+    # event_type 1 = Sudden Acceleration, 2 = Harsh Braking, 3 = Sharp Turn
+    sa = sum(1 for _, _, _, et, _  in rows if et == 1)
+    hb = sum(1 for _, _, _, et, _  in rows if et == 2)
     st = sum(1 for _, _, _, et, _  in rows if et == 3)
     co = sum(1 for _, _, _, _,  ct in rows if ct is not None)
     tot = max(hb + sa + st + co, 1)

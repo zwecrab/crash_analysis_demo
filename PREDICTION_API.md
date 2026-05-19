@@ -69,7 +69,7 @@ Content-Type: application/json
 
 ## Data Available
 
-- **Event types**: 1=Harsh Braking, 2=Sudden Acceleration, 3=Sharp Turn
+- **Event types**: 1=Sudden Acceleration, 2=Harsh Braking, 3=Sharp Turn
 - **Collision type**: 17=Front-Back Collision (Driving)
 - **Speed**: km/h (NULL for ~77% of records)
 - **G-forces**: gx_acci, gy_acci (only during collisions)

@@ -74,11 +74,12 @@ for vin, timestamp, lat, lon, speed, event_type, collision_type in records:
             stats[name]["vins"].add(vin)
             if speed is not None:
                 stats[name]["speeds"].append(speed)
+            # event_type 1 = Sudden Acceleration, 2 = Harsh Braking, 3 = Sharp Turn
             if event_type == 1:
+                stats[name]["accel"] += 1
+            elif event_type == 2:
                 stats[name]["braking"] += 1
                 stats[name]["hb_hours"].append(timestamp)
-            elif event_type == 2:
-                stats[name]["accel"] += 1
             elif event_type == 3:
                 stats[name]["turn"] += 1
             if collision_type is not None:
@@ -112,7 +113,7 @@ for name, data in stats.items():
     
     print(f"{name:<20} | {vins_count:<6} | {hb:<7} | {sa:<5} | {st:<4} | {co:<4} | {avg_speed:<7.1f} | {min_speed:<7.1f} | {max_speed:<7.1f} | {event_rate:<9.2f}%")
 
-print("\n=== Time of Day Distribution for Harsh Braking (Event 1) ===")
+print("\n=== Time of Day Distribution for Harsh Braking (Event 2) ===")
 
 time_categories = {
     "Morning Peak (07:00-09:00)": 0,

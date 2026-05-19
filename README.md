@@ -141,8 +141,8 @@ Raw counts from the `event_type` column (PHYD 0x21 stream) within the time + bbo
 
 | Slice | Source |
 |---|---|
-| Harsh Braking | `event_type = 1` |
-| Sudden Acceleration | `event_type = 2` |
+| Sudden Acceleration | `event_type = 1` |
+| Harsh Braking | `event_type = 2` |
 | Sharp Turn | `event_type = 3` |
 | Collision | `collision_type IS NOT NULL` |
 

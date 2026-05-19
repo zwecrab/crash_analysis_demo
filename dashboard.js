@@ -70,8 +70,8 @@ function vehicleColor(vin,evt,prevSpd,curSpd){
   // Use firmware event_type first — it's the ground-truth signal.
   // DB stores integers 1/2/3; JSON may deserialise as number or string.
   const e=evt==null?null:Number(evt);
-  if(e===1)return'#f59e0b';   // Harsh Braking  → amber
-  if(e===2)return'#0d9488';   // Sudden Accel   → teal
+  if(e===1)return'#0d9488';   // Sudden Accel   → teal
+  if(e===2)return'#f59e0b';   // Harsh Braking  → amber
   if(e===3)return'#8b5cf6';   // Sharp Turn     → purple
   // Fallback for Basic (0x11) rows: detect from speed delta
   if(prevSpd!=null&&curSpd!=null){
