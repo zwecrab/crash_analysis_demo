@@ -28,3 +28,6 @@ sensor_local.duckdb.tmp/
 *.duckdb.wal
 *.duckdb.tmp
 
+# local charts folder
+charts/
+

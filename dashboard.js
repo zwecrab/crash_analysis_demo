@@ -23,7 +23,7 @@ const S={tStartMs:null,tEndMs:null,curMs:null,playing:false,timer:null,
   sectionDaily:{A:null,B:null,C:null},                  // per-section daily series
   lastSectionRiskDay:{A:null,B:null,C:null},
   // Heatmap mode state
-  heatLayer:null,heatZonePoly:null,
+  heatLayer:null,heatZonePoly:null,heatmapPoints:null,heatmapCapped:false,
   heatEventType:0,heatSpeedBracket:0,heatHour:24,
   staticMode:false};
 
@@ -874,8 +874,8 @@ function drawRoadGeometry(){
     }).addTo(map);
     rect.bindTooltip(`Section ${s.id} · ${s.label}`,{direction:'top',sticky:true,className:'section-tooltip'});
     
-    // Only allow selecting sections by clicking on the map if in 'road' mode
-    if(S.mode==='road'){
+    // Allow selecting sections by clicking on the map if in 'road' or 'heatmap' mode
+    if(S.mode==='road'||S.mode==='heatmap'){
       rect.on('click',()=>setActiveSection(S.activeSection===s.id?null:s.id));
     }
     S.roadRects.push(rect);
@@ -916,8 +916,12 @@ function setActiveSection(id){
   // Bbox changed → invalidate caches and refetch the scope-dependent feeds
   S.cacheStart=null;S.cacheEnd=null;
   S.lastRiskDay=null;     // sidebar gauge will repaint for new scope
-  Promise.allSettled([fetchAccidents(),fetchAnalytics().then(updateCharts)])
-    .then(()=>loadTrajectoryWindow(S.curMs).then(renderFrame));
+  if(S.mode==='heatmap'){
+    renderHeatLayer(S.heatmapPoints);
+  }else{
+    Promise.allSettled([fetchAccidents(),fetchAnalytics().then(updateCharts)])
+      .then(()=>loadTrajectoryWindow(S.curMs).then(renderFrame));
+  }
 }
 
 async function enterRoadMode(){
@@ -1096,11 +1100,9 @@ async function fetchHeatmapData(){
   if(loadEl) loadEl.classList.remove('hidden');
   try {
     const d = await api('/api/heatmap?' + p);
+    S.heatmapPoints = d.points;
+    S.heatmapCapped = d.capped;
     renderHeatLayer(d.points);
-    if(cntEl){
-      cntEl.textContent = d.total.toLocaleString() + ' event' + (d.total !== 1 ? 's' : '');
-      if(d.capped) cntEl.textContent += ' (capped at 60 000)';
-    }
   } catch(e) {
     console.error('[heatmap] fetch failed:', e);
     showToast('Heatmap fetch failed: ' + e.message, '#b73d3d');
@@ -1112,7 +1114,26 @@ async function fetchHeatmapData(){
 
 function renderHeatLayer(points){
   if(S.heatLayer){ S.heatLayer.remove(); S.heatLayer = null; }
-  if(!points || !points.length) return;
+  if(!points || !points.length) {
+    const cntEl = document.getElementById('hm-point-count');
+    if(cntEl) cntEl.textContent = '0 events';
+    return;
+  }
+
+  let displayPoints = points;
+  if(S.activeSection){
+    displayPoints = points.filter(p => sectionFor(p[0], p[1]) === S.activeSection);
+  }
+
+  const cntEl = document.getElementById('hm-point-count');
+  if(cntEl){
+    const total = displayPoints.length;
+    let txt = total.toLocaleString() + ' event' + (total !== 1 ? 's' : '');
+    if(S.heatmapCapped && !S.activeSection) txt += ' (capped at 60 000)';
+    cntEl.textContent = txt;
+  }
+
+  if(!displayPoints || !displayPoints.length) return;
 
   // Create custom heatmap pane on top of SVG overlay pane (z-index 450)
   // to prevent it from being occluded/dimmed by the dark road mask
@@ -1125,7 +1146,7 @@ function renderHeatLayer(points){
   const grad = HEAT_GRADIENTS[S.heatEventType] || HEAT_GRADIENTS[0];
   
   // Reduce density saturation by lowering radius/blur and raising max capacity
-  S.heatLayer = L.heatLayer(points, {
+  S.heatLayer = L.heatLayer(displayPoints, {
     radius:      10,      // reduced from 18 to isolate hotspots
     blur:        8,       // reduced from 14 for crisper boundaries
     maxZoom:     19,
@@ -1139,6 +1160,8 @@ function renderHeatLayer(points){
 function clearHeatLayer(){
   if(S.heatLayer){ S.heatLayer.remove(); S.heatLayer = null; }
   if(S.heatZonePoly){ S.heatZonePoly.remove(); S.heatZonePoly = null; }
+  S.heatmapPoints = null;
+  S.heatmapCapped = false;
 }
 
 async function enterHeatmapMode(){
@@ -1160,16 +1183,36 @@ async function enterHeatmapMode(){
   // Draw the 3-section polygons and the roadMask
   drawRoadGeometry();
 
-  // Zoom to the unified road bounds
-  const bb = roadBbox();
-  map.fitBounds([[bb.lat_min, bb.lon_min], [bb.lat_max, bb.lon_max]], {padding:[80,80], maxZoom:18, animate:true});
+  // Show section panel so they can click cards to focus sections!
+  document.getElementById('section-panel').classList.remove('hidden');
+  renderSectionTiles();
+
+  // Zoom to active section if set, else unified road bounds
+  if(S.activeSection){
+    const sec = S.road.sections.find(s=>s.id===S.activeSection);
+    if(sec){
+      const ring=sec.polygon||[[sec.lat_min,sec.lon_min],[sec.lat_max,sec.lon_max]];
+      map.fitBounds(ring,{padding:[40,40],animate:true,maxZoom:19});
+      const closeBtn=document.getElementById('btn-close-section');
+      if(closeBtn){
+        closeBtn.classList.remove('hidden');
+        closeBtn.setAttribute('title',`Back to full road view (currently focused on Section ${S.activeSection} · ${sec.label})`);
+      }
+    }
+  } else {
+    const bb = roadBbox();
+    map.fitBounds([[bb.lat_min, bb.lon_min], [bb.lat_max, bb.lon_max]], {padding:[80,80], maxZoom:18, animate:true});
+  }
 
   fetchHeatmapData();
 }
 
-async function exitHeatmapMode(){
+async function exitHeatmapMode(to){
   clearHeatLayer();
-  clearRoadGeometry();
+  if(to!=='road'){
+    clearRoadGeometry();
+    document.getElementById('section-panel').classList.add('hidden');
+  }
   document.getElementById('heatmap-panel').classList.add('hidden');
 }
 
@@ -1264,15 +1307,6 @@ document.getElementById('btn-reset').addEventListener('click',async()=>{
   try{const bs=await api('/api/blackspots');if(bs&&bs.length){lat=bs[0].lat;lng=bs[0].lon;r=bs[0].radius_m||500;}}catch(e){}
   createCircle(lat,lng,r);onCircleChange();
 });
-document.getElementById('btn-acc-mode').addEventListener('click',function(){
-  const modes=['persist','flash','hidden'],cur=modes.indexOf(S.accMode);
-  S.accMode=modes[(cur+1)%3];
-  this.textContent={'persist':'Persist','flash':'Flash','hidden':'Hidden'}[S.accMode];
-  // Wipe stale markers so e.g. Persist→Flash actually drops the ones outside
-  // the flash window when playback is paused.
-  clearAccMarkers();S.accMarkers=[];
-  if(S.accMode!=='hidden')renderAccidents();
-});
 function setTimelineInteraction(enabled){
   const ids = ['timeline','btn-pause','btn-play','btn-stop','btn-prev','btn-next','time-jump-input','btn-time-jump','speed-select'];
   ids.forEach(id=>{
@@ -1340,7 +1374,7 @@ function toggleMapStyle(){
   }
   const btn=document.getElementById('btn-map-toggle');
   if(btn){
-    btn.textContent=to==='light'?'🗺️ Google Map':'🌙 Dark Mode';
+    btn.textContent=to==='light'?'🌙 Dark Mode':'🗺️ Google Map';
     btn.classList.toggle('active',to==='light');
   }
 }
@@ -1372,9 +1406,20 @@ async function switchMode(to){
   if(S.mode===to)return;
   const from=S.mode;
   // --- tear-down current mode ---
-  if(from==='heatmap') await exitHeatmapMode();
-  if(from==='road') { clearRoadGeometry(); document.getElementById('section-panel').classList.add('hidden'); S.activeSection=null; }
-  if(from==='full'||from==='road') { if(S.circle){S.circle.remove();S.circle=null} if(S.mask){S.mask.remove();S.mask=null} }
+  if(from==='heatmap') await exitHeatmapMode(to);
+  if(from==='road'){
+    if(to!=='heatmap'){
+      clearRoadGeometry();
+      document.getElementById('section-panel').classList.add('hidden');
+      S.activeSection=null;
+    }
+  }
+  if(from==='full'||from==='road'){
+    if(to!=='heatmap'){
+      if(S.circle){S.circle.remove();S.circle=null}
+      if(S.mask){S.mask.remove();S.mask=null}
+    }
+  }
   // always clear vehicle markers between modes
   S.markers.forEach(m=>m.remove()); S.markers.clear();
   clearAccMarkers(); S.accMarkers=[];
