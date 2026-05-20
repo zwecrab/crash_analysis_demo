@@ -44,7 +44,7 @@ function circleLatLngs(lat,lng,radiusM){
 
 /* ── Map ───────────────────────────────────────────────── */
 const map=L.map('map',{zoomControl:true,preferCanvas:true});
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+let baseTileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19}).addTo(map);
 
 /* ── Helpers ───────────────────────────────────────────── */
