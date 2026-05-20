@@ -5,7 +5,7 @@ const S={tStartMs:null,tEndMs:null,curMs:null,playing:false,timer:null,
   bounds:null,circle:null,mask:null,circleCenter:null,radiusM:500,
   trajs:{},cacheStart:null,cacheEnd:null,prefetching:false,
   sampleSec:2,   // kept in sync with whatever fetchTrajectory last used
-  accidents:[],accMarkers:[],accidentVins:{},accMode:'persist',
+  accidents:[],accMarkers:[],accidentVins:{},accMode:'persist',mapStyle:'dark',
   charts:{},eventLabels:{},collisionLabels:{},
   markers:new Map(),statusCounts:{normal:0,accel:0,brake:0,turn:0,collision:0},
   // Collision-list / focus-mode state
