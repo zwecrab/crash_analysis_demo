@@ -16,6 +16,14 @@ venv/
 *.parquet
 *.csv
 *.xlsx
+*.duckdb
+*.duckdb.wal
+*.tmp
+sensor_local.duckdb.tmp/
+Dataset/
+
+# Experiment outputs
+Experiment/
 
 # OS
 .DS_Store
@@ -30,4 +38,3 @@ sensor_local.duckdb.tmp/
 
 # local charts folder
 charts/
-

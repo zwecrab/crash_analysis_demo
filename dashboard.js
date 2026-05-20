@@ -16,7 +16,6 @@ const S={tStartMs:null,tEndMs:null,curMs:null,playing:false,timer:null,
   dailyCrashes:null,dailyEvents:null,lastRiskDay:null,
   // Road-Focus mode (Kamphaeng Phet 6 Rd partitioned into sections A/B/C)
   mode:'full',road:null,  // mode: 'full' | 'road' | 'heatmap'
-  mapStyle:'dark',
   roadRects:[],roadLabels:[],roadMask:null,
   activeSection:null,
   sectionAnalytics:{},                                  // {A:{...},B:{...},C:{...}}
@@ -45,7 +44,7 @@ function circleLatLngs(lat,lng,radiusM){
 
 /* ── Map ───────────────────────────────────────────────── */
 const map=L.map('map',{zoomControl:true,preferCanvas:true});
-let baseTileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
   attribution:'&copy; OSM &copy; CARTO',subdomains:'abcd',maxZoom:19}).addTo(map);
 
 /* ── Helpers ───────────────────────────────────────────── */
@@ -71,8 +70,8 @@ function vehicleColor(vin,evt,prevSpd,curSpd){
   // Use firmware event_type first — it's the ground-truth signal.
   // DB stores integers 1/2/3; JSON may deserialise as number or string.
   const e=evt==null?null:Number(evt);
-  if(e===1)return'#f59e0b';   // Harsh Braking  → amber
-  if(e===2)return'#0d9488';   // Sudden Accel   → teal
+  if(e===1)return'#0d9488';   // Sudden Accel   → teal
+  if(e===2)return'#f59e0b';   // Harsh Braking  → amber
   if(e===3)return'#8b5cf6';   // Sharp Turn     → purple
   // Fallback for Basic (0x11) rows: detect from speed delta
   if(prevSpd!=null&&curSpd!=null){
@@ -156,9 +155,6 @@ async function fetchAccidents(){
   const bb=activeBbox();
   const p=new URLSearchParams({lat_min:bb.lat_min,lat_max:bb.lat_max,lon_min:bb.lon_min,lon_max:bb.lon_max,
     t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
-  if(S.mode==='road'){
-    p.set('section_id',S.activeSection||'all');
-  }
   const d=await api('/api/accidents?'+p);
   S.accidents=d.accidents||[];S.accidentVins=d.accident_vins||{};
   updateTypeFilterOptions();
@@ -171,9 +167,6 @@ async function fetchAnalytics(){
     t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
   const cm=document.getElementById('cm-date').value;
   if(cm)p.set('countermeasure_date',cm);
-  if(S.mode==='road'){
-    p.set('section_id',S.activeSection||'all');
-  }
   return api('/api/analytics?'+p);
 }
 
@@ -192,7 +185,6 @@ async function fetchSectionAnalytics(){
       lon_min:s.lon_min,lon_max:s.lon_max,
       t_start:iso(S.tStartMs),t_end:iso(S.tEndMs)});
     if(cm)p.set('countermeasure_date',cm);
-    p.set('section_id',s.id);
     const t0=performance.now();
     try{
       const d=await api('/api/analytics?'+p);
@@ -419,8 +411,10 @@ function initCharts(){
     data:{labels:[],datasets:[{data:[],borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.08)',fill:true,tension:.35,pointRadius:1.5,borderWidth:1.5}]},
     options:{...CO,scales:{x:{ticks:{font:{size:8},color:'#64748b',maxRotation:0,maxTicksLimit:5},grid:{display:false}},y:{ticks:{font:{size:9},color:'#64748b',maxTicksLimit:4},grid:{color:'#f1f5f9'}}}}});
   S.charts.events=new Chart(document.getElementById('chart-events'),{type:'doughnut',
+    // Colors match heatmap, map dots, legend, and speed panel for consistency:
+    //   Harsh Brake → amber  ·  Sudden Accel → teal  ·  Sharp Turn → purple  ·  Collision → red
     data:{labels:['Harsh Brake','Sudden Accel','Sharp Turn','Collision'],
-      datasets:[{data:[1,1,1,1],backgroundColor:['#3b82f6','#0d9488','#8b5cf6','#dc2626'],borderWidth:0,hoverOffset:4}]},
+      datasets:[{data:[1,1,1,1],backgroundColor:['#f59e0b','#0d9488','#8b5cf6','#dc2626'],borderWidth:0,hoverOffset:4}]},
     options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:{legend:{position:'right',labels:{font:{size:9},color:'#374151',padding:6,usePointStyle:true,pointStyleWidth:7}}}}});
 }
 
@@ -441,24 +435,7 @@ function drawGauge(score){
   ctx.font=`700 ${Math.round(H*.27)}px Inter,system-ui`;ctx.fillStyle='#1e293b';ctx.fillText(score.toFixed(1),cx,cy-r*.4);
 }
 
-function updateAnalyticsHeader(){
-  const header=document.getElementById('analytics-header');
-  if(!header)return;
-  if(S.mode==='road'){
-    if(S.activeSection){
-      const sec=S.road&&S.road.sections.find(s=>s.id===S.activeSection);
-      const label=sec?sec.label:'';
-      header.innerHTML=`Analytics <span class="header-sub">· Section ${S.activeSection} (${label})</span>`;
-    }else{
-      header.innerHTML=`Analytics <span class="header-sub">· Kamphaeng Phet 6 Corridor</span>`;
-    }
-  }else{
-    header.innerHTML=`Analytics <span class="header-sub">· Full Map Area</span>`;
-  }
-}
-
 function updateCharts(d){
-  updateAnalyticsHeader();
   if(d.before_after){
     document.getElementById('ba-placeholder').style.display='none';
     document.getElementById('ba-row').style.display='flex';
@@ -529,7 +506,7 @@ function createCircle(lat,lng,radius){
   const outerRing=[[-90,-360],[-90,360],[90,360],[90,-360]];
   const innerRing=circleLatLngs(lat,lng,radius);
   S.mask=L.polygon([outerRing,innerRing],{
-    color:'none',fillColor:S.mapStyle==='light'?'#faf7f2':'#0f172a',fillOpacity:S.mapStyle==='light'?0.65:0.76,
+    color:'none',fillColor:'#0f172a',fillOpacity:0.76,
     interactive:false,smoothFactor:1
   }).addTo(map);
 
@@ -851,7 +828,7 @@ function drawRoadGeometry(){
     [s.lat_max,s.lon_max],[s.lat_max,s.lon_min]
   ]);
   S.roadMask=L.polygon([outerRing,...holes],{
-    color:'none',fillColor:S.mapStyle==='light'?'#faf7f2':'#0f0d0b',fillOpacity:S.mapStyle==='light'?.62:.78,
+    color:'none',fillColor:'#0f0d0b',fillOpacity:.78,
     interactive:false,smoothFactor:1
   }).addTo(map);
 
@@ -1078,10 +1055,11 @@ const HEATMAP_ZONE = (() => {
 })();
 
 // Colour gradients per event type — passed to L.heatLayer's gradient option.
+// event_type 1 = Sudden Acceleration, 2 = Harsh Braking, 3 = Sharp Turn
 const HEAT_GRADIENTS = {
-  0: {0.2:'#3b82f6', 0.5:'#f59e0b', 1.0:'#dc2626'},              // all  → blue-amber-red
-  1: {0.2:'#fef3c7', 0.5:'#f59e0b', 1.0:'#b45309'},              // brake → amber/dark-amber
-  2: {0.2:'#ccfbf1', 0.5:'#0d9488', 1.0:'#065f46'},              // accel → teal
+  0: {0.2:'#3b82f6', 0.5:'#f59e0b', 1.0:'#dc2626'},              // all   → blue-amber-red
+  1: {0.2:'#ccfbf1', 0.5:'#0d9488', 1.0:'#065f46'},              // accel → teal
+  2: {0.2:'#fef3c7', 0.5:'#f59e0b', 1.0:'#b45309'},              // brake → amber/dark-amber
   3: {0.2:'#ede9fe', 0.5:'#8b5cf6', 1.0:'#5b21b6'},              // turn  → purple
 };
 
