@@ -411,8 +411,10 @@ function initCharts(){
     data:{labels:[],datasets:[{data:[],borderColor:'#2563eb',backgroundColor:'rgba(37,99,235,.08)',fill:true,tension:.35,pointRadius:1.5,borderWidth:1.5}]},
     options:{...CO,scales:{x:{ticks:{font:{size:8},color:'#64748b',maxRotation:0,maxTicksLimit:5},grid:{display:false}},y:{ticks:{font:{size:9},color:'#64748b',maxTicksLimit:4},grid:{color:'#f1f5f9'}}}}});
   S.charts.events=new Chart(document.getElementById('chart-events'),{type:'doughnut',
+    // Colors match heatmap, map dots, legend, and speed panel for consistency:
+    //   Harsh Brake → amber  ·  Sudden Accel → teal  ·  Sharp Turn → purple  ·  Collision → red
     data:{labels:['Harsh Brake','Sudden Accel','Sharp Turn','Collision'],
-      datasets:[{data:[1,1,1,1],backgroundColor:['#3b82f6','#0d9488','#8b5cf6','#dc2626'],borderWidth:0,hoverOffset:4}]},
+      datasets:[{data:[1,1,1,1],backgroundColor:['#f59e0b','#0d9488','#8b5cf6','#dc2626'],borderWidth:0,hoverOffset:4}]},
     options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:{legend:{position:'right',labels:{font:{size:9},color:'#374151',padding:6,usePointStyle:true,pointStyleWidth:7}}}}});
 }
 
@@ -1049,10 +1051,11 @@ const HEATMAP_ZONE = (() => {
 })();
 
 // Colour gradients per event type — passed to L.heatLayer's gradient option.
+// event_type 1 = Sudden Acceleration, 2 = Harsh Braking, 3 = Sharp Turn
 const HEAT_GRADIENTS = {
-  0: {0.2:'#3b82f6', 0.5:'#f59e0b', 1.0:'#dc2626'},              // all  → blue-amber-red
-  1: {0.2:'#fef3c7', 0.5:'#f59e0b', 1.0:'#b45309'},              // brake → amber/dark-amber
-  2: {0.2:'#ccfbf1', 0.5:'#0d9488', 1.0:'#065f46'},              // accel → teal
+  0: {0.2:'#3b82f6', 0.5:'#f59e0b', 1.0:'#dc2626'},              // all   → blue-amber-red
+  1: {0.2:'#ccfbf1', 0.5:'#0d9488', 1.0:'#065f46'},              // accel → teal
+  2: {0.2:'#fef3c7', 0.5:'#f59e0b', 1.0:'#b45309'},              // brake → amber/dark-amber
   3: {0.2:'#ede9fe', 0.5:'#8b5cf6', 1.0:'#5b21b6'},              // turn  → purple
 };
 
