@@ -31,6 +31,16 @@ app = FastAPI(title="L-DCM Crash Risk Analysis API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 _DIR = os.path.dirname(__file__)
 
+@app.middleware("http")
+async def add_cache_control_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/modules/") or path in ["/dashboard.js", "/style.css", "/"]:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+app.mount("/modules", StaticFiles(directory=os.path.join(_DIR, "modules")), name="modules")
+
 # ── Precise Spatial Boundary Geometry (Kamphaeng Phet 6 Rd) ──
 def _load_road_sections():
     path = os.path.join(_DIR, "road.json")
@@ -201,10 +211,29 @@ class _DuckCursor:
         pass
 
 
+_SPATIAL_AVAILABLE = False
+
 class _DuckConn:
     """Thin shim so _conn() always returns something with .cursor() and .close()."""
     def __init__(self):
+        global _SPATIAL_AVAILABLE
         self._conn = _duckdb.connect(_LOCAL_DB, read_only=True)
+        if not _SPATIAL_AVAILABLE:
+            try:
+                self._conn.execute("LOAD spatial;")
+                _SPATIAL_AVAILABLE = True
+            except Exception:
+                try:
+                    self._conn.execute("INSTALL spatial;")
+                    self._conn.execute("LOAD spatial;")
+                    _SPATIAL_AVAILABLE = True
+                except Exception as e:
+                    print(f"[app] Warning: Failed to load DuckDB spatial extension: {e}")
+        else:
+            try:
+                self._conn.execute("LOAD spatial;")
+            except Exception:
+                pass
 
     def cursor(self):
         return _DuckCursor(self._conn)
@@ -251,15 +280,26 @@ def _severity(gx):
 
 @app.get("/", include_in_schema=False)
 def serve_ui():
-    return FileResponse(os.path.join(_DIR, "map_report.html"))
+    return FileResponse(
+        os.path.join(_DIR, "map_report.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 @app.get("/style.css", include_in_schema=False)
 def serve_css():
-    return FileResponse(os.path.join(_DIR, "style.css"), media_type="text/css")
+    return FileResponse(
+        os.path.join(_DIR, "style.css"),
+        media_type="text/css",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 @app.get("/dashboard.js", include_in_schema=False)
 def serve_js():
-    return FileResponse(os.path.join(_DIR, "dashboard.js"), media_type="application/javascript")
+    return FileResponse(
+        os.path.join(_DIR, "dashboard.js"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 
 @app.get("/api/meta")
@@ -627,6 +667,15 @@ def get_blackspots():
     return []
 
 
+def _polygon_to_wkt(poly):
+    if not poly:
+        return ""
+    pts = [f"{pt[1]} {pt[0]}" for pt in poly]
+    if pts[0] != pts[-1]:
+        pts.append(pts[0])
+    return f"POLYGON(({', '.join(pts)}))"
+
+
 @app.get("/api/heatmap")
 def get_heatmap(
     lat_min: float = Query(...), lat_max: float = Query(...),
@@ -666,31 +715,53 @@ def get_heatmap(
     else:
         hour_sql = ""    # -1 = all hours
 
-    cur.execute(f"""
-        SELECT lat::float8, lon::float8
-        FROM sensor
-        WHERE lat  BETWEEN %s AND %s
-          AND lon  BETWEEN %s AND %s
-          {event_sql}
-          {speed_sql}
-          {hour_sql}
-        LIMIT 60000
-    """, (lat_min, lat_max, lon_min, lon_max))
+    if _USE_DUCK and _SPATIAL_AVAILABLE and _ROAD_POLYGONS:
+        wkt_polys = [_polygon_to_wkt(p) for p in _ROAD_POLYGONS]
+        spatial_clauses = [f"ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt}'))" for wkt in wkt_polys]
+        spatial_sql = f"AND ({' OR '.join(spatial_clauses)})"
 
-    rows = cur.fetchall()
-    cur.close(); conn.close()
+        cur.execute(f"""
+            SELECT lat::float8, lon::float8
+            FROM sensor
+            WHERE lat  BETWEEN %s AND %s
+              AND lon  BETWEEN %s AND %s
+              {event_sql}
+              {speed_sql}
+              {hour_sql}
+              {spatial_sql}
+            LIMIT 60000
+        """, (lat_min, lat_max, lon_min, lon_max))
 
-    # Filter points precisely inside our oriented road section polygons
-    filtered_points = []
-    for r in rows:
-        lat, lon = r[0], r[1]
-        in_zone = False
-        for poly in _ROAD_POLYGONS:
-            if _point_in_polygon(lat, lon, poly):
-                in_zone = True
-                break
-        if in_zone:
-            filtered_points.append([lat, lon])
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+
+        filtered_points = [[r[0], r[1]] for r in rows]
+    else:
+        cur.execute(f"""
+            SELECT lat::float8, lon::float8
+            FROM sensor
+            WHERE lat  BETWEEN %s AND %s
+              AND lon  BETWEEN %s AND %s
+              {event_sql}
+              {speed_sql}
+              {hour_sql}
+            LIMIT 60000
+        """, (lat_min, lat_max, lon_min, lon_max))
+
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+
+        # Filter points precisely inside our oriented road section polygons (Python fallback)
+        filtered_points = []
+        for r in rows:
+            lat, lon = r[0], r[1]
+            in_zone = False
+            for poly in _ROAD_POLYGONS:
+                if _point_in_polygon(lat, lon, poly):
+                    in_zone = True
+                    break
+            if in_zone:
+                filtered_points.append([lat, lon])
 
     return {
         "points": filtered_points,
