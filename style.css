@@ -1133,3 +1133,113 @@ html,body{
   cursor: not-allowed !important;
   pointer-events: none !important;
 }
+
+/* ── Route Analysis Matrix Table Styles ── */
+.rm-container {
+  margin-top: 6px;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-paper);
+  background: var(--bg-paper-hi);
+}
+.rm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+.rm-table th {
+  color: var(--ink-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 8px 6px;
+  border-bottom: 1.5px solid var(--border-paper-mid);
+  background: var(--bg-paper-mute);
+  text-align: right;
+}
+.rm-table th:first-child {
+  text-align: left;
+}
+.rm-row {
+  border-bottom: 1px solid var(--border-paper);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.rm-row:last-child {
+  border-bottom: none;
+}
+.rm-row:hover {
+  background: var(--bg-paper-hover);
+}
+.rm-row.active {
+  background: var(--accent-wash);
+  border-left: 3px solid var(--accent);
+}
+.rm-route-name {
+  padding: 8px 6px;
+  color: var(--ink);
+  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rm-route-desc {
+  font-size: 9.5px;
+  color: var(--ink-muted);
+  font-weight: 400;
+}
+.rm-num {
+  padding: 8px 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-mid);
+}
+.rm-row.active .rm-num {
+  color: var(--accent-lo);
+  font-weight: 600;
+}
+.connector-badge {
+  background: var(--accent-wash);
+  color: var(--accent-lo);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1.5px 4px;
+  border-radius: 3px;
+  display: inline-block;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-left: 4px;
+  border: 1px solid rgba(199, 97, 60, 0.2);
+  vertical-align: middle;
+}
+.rm-row.rm-connector:hover {
+  border-left: 3px solid var(--accent-hi);
+}
+
+/* Animated Route Line & Tooltip */
+.animated-route-line {
+  animation: routeDashFlow 0.8s linear infinite;
+  stroke-dasharray: 8, 12;
+}
+@keyframes routeDashFlow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+.route-hover-tooltip {
+  background: var(--bg-panel-ov) !important;
+  border: 1px solid var(--border-dark-mid) !important;
+  color: #fff !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 6px 12px !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-lg) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+

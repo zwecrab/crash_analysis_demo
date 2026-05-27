@@ -143,12 +143,72 @@
     <aside id="analytics">
       <div id="analytics-header">Analytics</div>
 
-      <!-- Risk Score — headline metric, shown first -->
-      <div class="card">
-        <div class="card-title">Risk Score</div>
-        <canvas id="gauge" width="260" height="70" style="width:100%;height:70px;display:block"></canvas>
-        <p id="risk-label" class="risk-label risk-low">RISK: LOW</p>
-        <div id="risk-detail" class="risk-detail"></div>
+      <!-- Route Analysis Matrix — O-D trips metric, shown first -->
+      <div class="card" id="card-route-matrix">
+        <div class="card-title">Route Analysis Matrix</div>
+        <div class="rm-container">
+          <table class="rm-table">
+            <thead>
+              <tr>
+                <th style="text-align:left">Route</th>
+                <th>Trips</th>
+                <th>Brake</th>
+                <th>Turn</th>
+                <th>Accel</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="rm-row" id="rm-row-AB" data-route="AB">
+                <td class="rm-route-name">A ➔ B <span class="rm-route-desc">North to South</span></td>
+                <td id="rm-AB-trips" class="rm-num">—</td>
+                <td id="rm-AB-brake" class="rm-num">—</td>
+                <td id="rm-AB-turn" class="rm-num">—</td>
+                <td id="rm-AB-accel" class="rm-num">—</td>
+              </tr>
+              <tr class="rm-row" id="rm-row-AC" data-route="AC">
+                <td class="rm-route-name">A ➔ C <span class="rm-route-desc">North to West</span></td>
+                <td id="rm-AC-trips" class="rm-num">—</td>
+                <td id="rm-AC-brake" class="rm-num">—</td>
+                <td id="rm-AC-turn" class="rm-num">—</td>
+                <td id="rm-AC-accel" class="rm-num">—</td>
+              </tr>
+              <tr class="rm-row" id="rm-row-BA" data-route="BA">
+                <td class="rm-route-name">B ➔ A <span class="rm-route-desc">South to North</span></td>
+                <td id="rm-BA-trips" class="rm-num">—</td>
+                <td id="rm-BA-brake" class="rm-num">—</td>
+                <td id="rm-BA-turn" class="rm-num">—</td>
+                <td id="rm-BA-accel" class="rm-num">—</td>
+              </tr>
+              <tr class="rm-row" id="rm-row-BC" data-route="BC">
+                <td class="rm-route-name">B ➔ C <span class="rm-route-desc">South to West</span></td>
+                <td id="rm-BC-trips" class="rm-num">—</td>
+                <td id="rm-BC-brake" class="rm-num">—</td>
+                <td id="rm-BC-turn" class="rm-num">—</td>
+                <td id="rm-BC-accel" class="rm-num">—</td>
+              </tr>
+              <tr class="rm-row rm-connector" id="rm-row-CA" data-route="CA">
+                <td class="rm-route-name">
+                  <span>C ➔ A <span class="connector-badge">Gate C</span></span>
+                  <span class="rm-route-desc">West to North</span>
+                </td>
+                <td id="rm-CA-trips" class="rm-num">—</td>
+                <td id="rm-CA-brake" class="rm-num">—</td>
+                <td id="rm-CA-turn" class="rm-num">—</td>
+                <td id="rm-CA-accel" class="rm-num">—</td>
+              </tr>
+              <tr class="rm-row rm-connector" id="rm-row-CB" data-route="CB">
+                <td class="rm-route-name">
+                  <span>C ➔ B <span class="connector-badge">Gate C</span></span>
+                  <span class="rm-route-desc">West to South</span>
+                </td>
+                <td id="rm-CB-trips" class="rm-num">—</td>
+                <td id="rm-CB-brake" class="rm-num">—</td>
+                <td id="rm-CB-turn" class="rm-num">—</td>
+                <td id="rm-CB-accel" class="rm-num">—</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- Event breakdown -->
