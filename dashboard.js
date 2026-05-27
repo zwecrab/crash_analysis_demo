@@ -2,9 +2,9 @@
 
 /* ── Imports ────────────────────────────────────────────── */
 import { S, iso, fmtDate, fmtStamp, getDist } from './modules/state.js';
-import { api, activeBbox, fetchAccidents, fetchAnalytics } from './modules/api.js';
-import { initCharts, updateCharts, updateRiskForCurrentDay } from './modules/charts.js';
-import { map, createCircle, onCircleChange, drawRoadGeometry, clearRoadGeometry, setActiveSection, enterRoadMode, exitRoadMode, toggleMapStyle } from './modules/map.js';
+import { api, activeBbox, fetchAccidents, fetchAnalytics, fetchRouteMatrix } from './modules/api.js';
+import { initCharts, updateCharts, updateRiskForCurrentDay, updateRouteMatrixUI } from './modules/charts.js';
+import { map, createCircle, onCircleChange, drawRoadGeometry, clearRoadGeometry, setActiveSection, enterRoadMode, exitRoadMode, toggleMapStyle, drawHoverRoute, clearHoverRoute } from './modules/map.js';
 import { clearAccMarkers, renderCollisionList, clearFocus, renderAccidents } from './modules/collisions.js';
 import { fetchHeatmapData, enterHeatmapMode, exitHeatmapMode } from './modules/heatmap.js';
 import { play, pause, stop, setTime, loadTrajectoryWindow, renderFrame, showToast } from './modules/playback.js';
@@ -88,6 +88,12 @@ async function switchMode(to) {
   if (to === 'full') await exitRoadMode();
   else if (to === 'road') await enterRoadMode();
   else if (to === 'heatmap') await enterHeatmapMode();
+
+  if (to !== 'heatmap') {
+    S.activeRoute = null;
+    document.querySelectorAll('.rm-row').forEach(r => r.classList.remove('active'));
+    clearHoverRoute();
+  }
 
   // Sync button toggles
   document.getElementById('btn-mode-full').classList.toggle('active', to === 'full');
@@ -175,6 +181,12 @@ async function init() {
     msg.textContent = 'Loading analytics…';
     const ad = await fetchAnalytics();
     updateCharts(ad);
+    try {
+      const rmRes = await fetchRouteMatrix();
+      updateRouteMatrixUI(rmRes.matrix);
+    } catch (err) {
+      console.error('Failed to load route matrix at startup:', err);
+    }
 
     msg.textContent = 'Finding vehicle data…';
     await loadTrajectoryWindow(S.curMs);
@@ -370,6 +382,53 @@ document.getElementById('time-jump-input').addEventListener('keydown', e => {
     e.preventDefault();
     doTimeJump();
   }
+});
+
+// O-D Route Matrix row interaction bindings
+document.querySelectorAll('.rm-row').forEach(row => {
+  const route = row.dataset.route;
+
+  // Hover: Draw centerline path and labels on map
+  row.addEventListener('mouseenter', () => {
+    drawHoverRoute(route);
+  });
+
+  // Mouseout: Clear centerline instantly, or restore active route
+  row.addEventListener('mouseleave', () => {
+    if (S.activeRoute) {
+      drawHoverRoute(S.activeRoute);
+    } else {
+      clearHoverRoute();
+    }
+  });
+
+  // Click: Toggle route-specific filtering on Leaflet.heat
+  row.addEventListener('click', () => {
+    const wasActive = row.classList.contains('active');
+
+    // Clear active status on all rows
+    document.querySelectorAll('.rm-row').forEach(r => r.classList.remove('active'));
+
+    if (wasActive) {
+      // De-select
+      S.activeRoute = null;
+      clearHoverRoute();
+    } else {
+      // Select
+      row.classList.add('active');
+      S.activeRoute = route;
+      drawHoverRoute(route);
+      
+      // If we are not in heatmap mode, switch to heatmap mode to see the route specific heat overlay!
+      if (S.mode !== 'heatmap') {
+        switchMode('heatmap');
+        return; // switchMode will trigger fetchHeatmapData
+      }
+    }
+
+    // Refresh heatmap
+    fetchHeatmapData();
+  });
 });
 
 /* ── Launch Dashboard ───────────────────────────────────── */

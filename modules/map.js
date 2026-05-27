@@ -381,3 +381,92 @@ export function toggleMapStyle() {
     btn.classList.toggle('active', to === 'light');
   }
 }
+
+export const ROUTE_PATHS = {
+  AB: [[13.840207, 100.556692], [13.840563, 100.556904]],
+  BA: [[13.840563, 100.556904], [13.840207, 100.556692]],
+  CA: [[13.840431, 100.556668], [13.840207, 100.556692]],
+  CB: [[13.840431, 100.556668], [13.840563, 100.556904]],
+  AC: [[13.840207, 100.556692], [13.840431, 100.556668]],
+  BC: [[13.840563, 100.556904], [13.840431, 100.556668]]
+};
+
+export const ROUTE_LABELS = {
+  AB: 'Route AB: North Entrance ➔ South Exit (Main Highway)',
+  BA: 'Route BA: South Entrance ➔ North Exit (Main Highway)',
+  CA: 'Route CA: Gate C Connector ➔ North Exit (High Risk Transit)',
+  CB: 'Route CB: Gate C Connector ➔ South Exit (High Risk Transit)',
+  AC: 'Route AC: North Entrance ➔ Gate C Connector',
+  BC: 'Route BC: South Entrance ➔ Gate C Connector'
+};
+
+export const GATE_COORDS = {
+  A: [[13.8402901, 100.5566285], [13.840211, 100.556587], [13.840122, 100.556756], [13.8402042, 100.5567961]],
+  B: [[13.840653, 100.556822], [13.8405745, 100.5567779], [13.8404676, 100.5569855], [13.840556, 100.557032]],
+  C: [[13.840411, 100.5566225], [13.8403827, 100.5566778], [13.8404524, 100.556715], [13.8404765, 100.556655]]
+};
+
+let hoverRoutePolyline = null;
+let hoverRouteTooltip = null;
+let hoverStartPolygon = null;
+let hoverEndPolygon = null;
+
+export function drawHoverRoute(routeId) {
+  clearHoverRoute();
+  const path = ROUTE_PATHS[routeId];
+  const label = ROUTE_LABELS[routeId];
+  if (!path || routeId.length !== 2) return;
+
+  const startGate = routeId[0];
+  const endGate = routeId[1];
+
+  // Draw start gate in green (origin)
+  if (GATE_COORDS[startGate]) {
+    hoverStartPolygon = L.polygon(GATE_COORDS[startGate], {
+      color: '#22c55e',
+      fillColor: '#22c55e',
+      fillOpacity: 0.35,
+      weight: 2,
+      interactive: false
+    }).addTo(map);
+  }
+
+  // Draw end gate in red (destination)
+  if (GATE_COORDS[endGate]) {
+    hoverEndPolygon = L.polygon(GATE_COORDS[endGate], {
+      color: '#ef4444',
+      fillColor: '#ef4444',
+      fillOpacity: 0.35,
+      weight: 2,
+      interactive: false
+    }).addTo(map);
+  }
+
+  // Draw centerline trajectory in subtle grey-white with moving dash micro-animation
+  hoverRoutePolyline = L.polyline(path, {
+    color: '#94a3b8',
+    weight: 3.5,
+    opacity: 0.85,
+    className: 'animated-route-line'
+  }).addTo(map);
+}
+
+export function clearHoverRoute() {
+  if (hoverRoutePolyline) {
+    hoverRoutePolyline.remove();
+    hoverRoutePolyline = null;
+  }
+  if (hoverRouteTooltip) {
+    hoverRouteTooltip.remove();
+    hoverRouteTooltip = null;
+  }
+  if (hoverStartPolygon) {
+    hoverStartPolygon.remove();
+    hoverStartPolygon = null;
+  }
+  if (hoverEndPolygon) {
+    hoverEndPolygon.remove();
+    hoverEndPolygon = null;
+  }
+}
+
