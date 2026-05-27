@@ -99,6 +99,14 @@ export async function fetchAnalytics() {
   return api('/api/analytics?' + p);
 }
 
+export async function fetchRouteMatrix() {
+  const p = new URLSearchParams({
+    t_start: iso(S.tStartMs),
+    t_end: iso(S.tEndMs)
+  });
+  return api('/api/route-matrix?' + p);
+}
+
 export async function fetchSectionAnalytics() {
   if (!S.road) return;
   const cm = document.getElementById('cm-date').value;
