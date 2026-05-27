@@ -240,3 +240,20 @@ export function updateRiskForCurrentDay(force) {
       `<span style="color:#b73d3d">■ 6–10 High</span>`;
   }
 }
+
+export function updateRouteMatrixUI(matrix) {
+  if (!matrix) return;
+  const routes = ['AB', 'AC', 'BA', 'BC', 'CA', 'CB'];
+  routes.forEach(r => {
+    const data = matrix[r] || { trips: 0, brake: 0, turn: 0, accel: 0 };
+    const tripsEl = document.getElementById(`rm-${r}-trips`);
+    const brakeEl = document.getElementById(`rm-${r}-brake`);
+    const turnEl = document.getElementById(`rm-${r}-turn`);
+    const accelEl = document.getElementById(`rm-${r}-accel`);
+    
+    if (tripsEl) tripsEl.textContent = data.trips.toLocaleString();
+    if (brakeEl) brakeEl.textContent = data.brake.toLocaleString();
+    if (turnEl) turnEl.textContent = data.turn.toLocaleString();
+    if (accelEl) accelEl.textContent = data.accel.toLocaleString();
+  });
+}
