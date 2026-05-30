@@ -67,6 +67,23 @@ export function interp(wps, tMs) {
   while (i < wps.length - 1 && new Date(wps[i + 1].t).getTime() <= tMs) i++;
   const a = wps[i], tA = new Date(a.t).getTime();
 
+  if (S.smoothingEnabled === false) {
+    if (i >= wps.length - 1) {
+      const el = (tMs - tA) / 1000;
+      const disappearAfter = Math.max(60, S.sampleSec * 20);
+      if (el > disappearAfter || el < 0) return null;
+    }
+    return {
+      lat: a.la,
+      lon: a.lo,
+      dir: a.d,
+      spd: a.s,
+      evt: a.e,
+      col: a.c,
+      prevSpd: a.s
+    };
+  }
+
   if (i >= wps.length - 1) {
     const el = (tMs - tA) / 1000;
     const disappearAfter = Math.max(60, S.sampleSec * 20);
@@ -140,62 +157,107 @@ export function renderFrame() {
   }
   const counts = { normal: 0, accel: 0, brake: 0, turn: 0, collision: 0 };
   const seen = new Set();
-  for (const [vin, wps] of Object.entries(S.trajs)) {
-    const p = interp(wps, S.curMs);
-    if (!p) {
-      if (S.markers.has(vin)) {
-        S.markers.get(vin).remove();
-        S.markers.delete(vin);
+  if (S.focusedVin) {
+    // Isolated Focus Mode: Only animate the selected vehicle using its full unfiltered trajectory
+    const wps = S.focusWaypoints || S.trajs[S.focusedVin];
+    if (wps && wps.length) {
+      const p = interp(wps, S.curMs);
+      if (p) {
+        seen.add(S.focusedVin);
+        const vin = S.focusedVin;
+        const col = vehicleColor(vin, p.evt, p.prevSpd, p.spd);
+        const isCol = vin in S.accidentVins && S.curMs >= new Date(S.accidentVins[vin]).getTime();
+        if (isCol) counts.collision++;
+        else if (col === '#0d9488') counts.accel++;
+        else if (col === '#f59e0b') counts.brake++;
+        else if (col === '#8b5cf6') counts.turn++;
+        else counts.normal++;
+
+        const icon = L.divIcon({
+          className: '',
+          html: arrowSvg(p.dir, col),
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        });
+        const spdStr = p.spd != null && !isNaN(p.spd) ? Math.round(p.spd) + ' km/h' : '—';
+        const dirStr = p.dir != null && !isNaN(p.dir) ? `${Math.round(p.dir)}° ${dirLabel(p.dir)}` : '—';
+        const popup =
+          `<b>${vin.slice(-8)}</b><br>${spdStr} | ${dirStr}` +
+          (p.evt ? `<br><span style="color:#f59e0b">${evtLabel(p.evt)}</span>` : '') +
+          (p.col ? `<br><b style="color:#dc2626">${colLabel(p.col)}</b>` : '');
+        if (S.markers.has(vin)) {
+          const m = S.markers.get(vin);
+          m.setLatLng([p.lat, p.lon]);
+          m.setIcon(icon);
+          m.getPopup()?.setContent(popup);
+        } else {
+          const m = L.marker([p.lat, p.lon], { icon, zIndexOffset: 2500 }).bindPopup(popup).addTo(map);
+          S.markers.set(vin, m);
+        }
       }
-      continue;
     }
-    if (S.mode === 'road') {
-      const sec = sectionFor(p.lat, p.lon);
-      const inRoad = sec !== null;
-      const inActive = !S.activeSection || sec === S.activeSection;
-      if (!inRoad || !inActive) {
+  } else {
+    // Normal Mode: Animate all vehicles within spatial bounds
+    for (const [vin, wps] of Object.entries(S.trajs)) {
+      const p = interp(wps, S.curMs);
+      if (!p) {
         if (S.markers.has(vin)) {
           S.markers.get(vin).remove();
           S.markers.delete(vin);
         }
         continue;
       }
-    } else if (S.circleCenter && getDist(p.lat, p.lon, S.circleCenter.lat, S.circleCenter.lng) > S.radiusM) {
-      if (S.markers.has(vin)) {
-        S.markers.get(vin).remove();
-        S.markers.delete(vin);
+      
+      // Bounding box/section filter checks for background traffic
+      if (S.mode === 'road') {
+        const sec = sectionFor(p.lat, p.lon);
+        const inRoad = sec !== null;
+        const inActive = !S.activeSection || sec === S.activeSection;
+        if (!inRoad || !inActive) {
+          if (S.markers.has(vin)) {
+            S.markers.get(vin).remove();
+            S.markers.delete(vin);
+          }
+          continue;
+        }
+      } else if (S.circleCenter && getDist(p.lat, p.lon, S.circleCenter.lat, S.circleCenter.lng) > S.radiusM) {
+        if (S.markers.has(vin)) {
+          S.markers.get(vin).remove();
+          S.markers.delete(vin);
+        }
+        continue;
       }
-      continue;
-    }
-    seen.add(vin);
-    const col = vehicleColor(vin, p.evt, p.prevSpd, p.spd);
-    const isCol = vin in S.accidentVins && S.curMs >= new Date(S.accidentVins[vin]).getTime();
-    if (isCol) counts.collision++;
-    else if (col === '#0d9488') counts.accel++;
-    else if (col === '#f59e0b') counts.brake++;
-    else if (col === '#8b5cf6') counts.turn++;
-    else counts.normal++;
+      
+      seen.add(vin);
+      const col = vehicleColor(vin, p.evt, p.prevSpd, p.spd);
+      const isCol = vin in S.accidentVins && S.curMs >= new Date(S.accidentVins[vin]).getTime();
+      if (isCol) counts.collision++;
+      else if (col === '#0d9488') counts.accel++;
+      else if (col === '#f59e0b') counts.brake++;
+      else if (col === '#8b5cf6') counts.turn++;
+      else counts.normal++;
 
-    const icon = L.divIcon({
-      className: '',
-      html: arrowSvg(p.dir, col),
-      iconSize: [16, 16],
-      iconAnchor: [8, 8]
-    });
-    const spdStr = p.spd != null && !isNaN(p.spd) ? Math.round(p.spd) + ' km/h' : '—';
-    const dirStr = p.dir != null && !isNaN(p.dir) ? `${Math.round(p.dir)}° ${dirLabel(p.dir)}` : '—';
-    const popup =
-      `<b>${vin.slice(-8)}</b><br>${spdStr} | ${dirStr}` +
-      (p.evt ? `<br><span style="color:#f59e0b">${evtLabel(p.evt)}</span>` : '') +
-      (p.col ? `<br><b style="color:#dc2626">${colLabel(p.col)}</b>` : '');
-    if (S.markers.has(vin)) {
-      const m = S.markers.get(vin);
-      m.setLatLng([p.lat, p.lon]);
-      m.setIcon(icon);
-      m.getPopup()?.setContent(popup);
-    } else {
-      const m = L.marker([p.lat, p.lon], { icon, zIndexOffset: 100 }).bindPopup(popup).addTo(map);
-      S.markers.set(vin, m);
+      const icon = L.divIcon({
+        className: '',
+        html: arrowSvg(p.dir, col),
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      });
+      const spdStr = p.spd != null && !isNaN(p.spd) ? Math.round(p.spd) + ' km/h' : '—';
+      const dirStr = p.dir != null && !isNaN(p.dir) ? `${Math.round(p.dir)}° ${dirLabel(p.dir)}` : '—';
+      const popup =
+        `<b>${vin.slice(-8)}</b><br>${spdStr} | ${dirStr}` +
+        (p.evt ? `<br><span style="color:#f59e0b">${evtLabel(p.evt)}</span>` : '') +
+        (p.col ? `<br><b style="color:#dc2626">${colLabel(p.col)}</b>` : '');
+      if (S.markers.has(vin)) {
+        const m = S.markers.get(vin);
+        m.setLatLng([p.lat, p.lon]);
+        m.setIcon(icon);
+        m.getPopup()?.setContent(popup);
+      } else {
+        const m = L.marker([p.lat, p.lon], { icon, zIndexOffset: 100 }).bindPopup(popup).addTo(map);
+        S.markers.set(vin, m);
+      }
     }
   }
   S.markers.forEach((m, vin) => {

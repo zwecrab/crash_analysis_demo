@@ -57,7 +57,8 @@ export const S = {
   heatEventType: 0,
   heatSpeedBracket: 0,
   heatHour: 24,
-  staticMode: false
+  staticMode: false,
+  smoothingEnabled: true
 };
 
 // Global base layer reference inside Leaflet map

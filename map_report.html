@@ -27,6 +27,9 @@
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-group">
+      <button class="tb-btn" id="btn-toggle-smooth" title="Toggle vehicle trajectory smoothing on the map">Normal Trip</button>
+    </div>
+    <div class="tb-group">
       <button class="tb-btn" id="btn-toggle-static" title="Hide all accidents and moving vehicles, and lock the timeline">Hide Active Data</button>
     </div>
     <div class="tb-group">
@@ -40,31 +43,31 @@
   <!-- Main -->
   <div id="main">
 
-    <!-- Collision List Panel (NEW) -->
-    <aside id="collision-panel">
-      <div id="collision-header">
-        <span>Collisions</span>
-        <div id="collision-header-right">
-          <span id="collision-count" class="collision-count-badge">0</span>
-          <button id="btn-collapse-collisions" class="collapse-btn" title="Collapse panel">◀</button>
+    <!-- Routes Telemetry & Vehicle Tracking Panel -->
+    <aside id="routes-panel" class="collapsed">
+      <div id="routes-header">
+        <span>Route Trips</span>
+        <div id="routes-header-right">
+          <span id="route-trips-count" class="route-count-badge">0</span>
+          <button id="btn-collapse-routes" class="collapse-btn" title="Collapse panel">▶</button>
         </div>
       </div>
-      <div id="collision-controls">
-        <select id="collision-type-filter" title="Filter by collision type">
-          <option value="all">All Types</option>
-        </select>
-        <select id="collision-severity-filter" title="Filter by severity">
-          <option value="all">All Severities</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
+      <div id="routes-controls" class="hidden">
+        <select id="route-event-filter" title="Filter by trip event type">
+          <option value="all">All Trips</option>
+          <option value="1">Sudden Acceleration</option>
+          <option value="2">Harsh Braking</option>
+          <option value="3">Sharp Turn</option>
+          <option value="normal">Normal Driving</option>
         </select>
       </div>
-      <div id="collision-focus-bar" class="collision-focus-bar hidden">
-        <span id="collision-focus-label">Investigating…</span>
-        <button id="btn-clear-focus" class="clear-focus-btn" title="Exit investigation mode">✕ Clear</button>
+      <div id="routes-focus-bar" class="routes-focus-bar hidden">
+        <span id="routes-focus-label">Highlighting trip...</span>
+        <button id="btn-clear-route-focus" class="clear-focus-btn" title="Clear track highlight">✕ Clear</button>
       </div>
-      <div id="collision-list"></div>
+      <div id="routes-list">
+        <div class="routes-empty">Select a route in the matrix to view trips.</div>
+      </div>
     </aside>
 
     <div id="map-wrap">

@@ -56,9 +56,9 @@ _ROAD_SECTIONS = _load_road_sections()
 _ROAD_POLYGONS = [s["polygon"] for s in _ROAD_SECTIONS]
 
 _GATE_POLYGONS = {
-    'A': [[13.8402901, 100.5566285], [13.840211, 100.556587], [13.840122, 100.556756], [13.8402042, 100.5567961]],
-    'B': [[13.840653, 100.556822], [13.8405745, 100.5567779], [13.8404676, 100.5569855], [13.840556, 100.557032]],
-    'C': [[13.840411, 100.5566225], [13.8403827, 100.5566778], [13.8404524, 100.556715], [13.8404765, 100.556655]]
+    'A': [[13.8402134, 100.5568106], [13.8402584, 100.5567211], [13.8401686, 100.5566678], [13.8401220, 100.5567560]],
+    'B': [[13.8405280, 100.5568707], [13.8404676, 100.5569855], [13.8405560, 100.5570320], [13.8406097, 100.5569150]],
+    'C': [[13.8404497, 100.5568122], [13.8404826, 100.5567311], [13.8403824, 100.5566774], [13.8403459, 100.5567566]]
 }
 
 # Combined bbox of all sections — used to gate polygon filtering in analytics.
@@ -734,17 +734,17 @@ def get_heatmap(
             gate_sql = f"""
                 CASE 
                     WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
-                    WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5567 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
-                    WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5568 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
+                    WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
+                    WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
                     ELSE NULL
                 END
             """
         else:
             gate_sql = """
                 CASE 
-                    WHEN lat BETWEEN 13.840122 AND 13.840291 AND lon BETWEEN 100.556587 AND 100.556797 THEN 'A'
-                    WHEN lat BETWEEN 13.840467 AND 13.840654 AND lon BETWEEN 100.556777 AND 100.557033 THEN 'B'
-                    WHEN lat BETWEEN 13.840382 AND 13.840477 AND lon BETWEEN 100.556622 AND 100.556716 THEN 'C'
+                    WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
+                    WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
+                    WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
                     ELSE NULL
                 END
             """
@@ -776,6 +776,7 @@ def get_heatmap(
                 FROM gate_crossings c1
                 JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
                 WHERE c1.gate = '{origin}' AND c2.gate = '{destination}'
+                  AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
             )
             SELECT s.lat::float8, s.lon::float8
             FROM sensor s
@@ -922,17 +923,17 @@ def get_route_matrix(
         gate_sql = f"""
             CASE 
                 WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
-                WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5567 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
-                WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5568 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
+                WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
+                WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
                 ELSE NULL
             END
         """
     else:
         gate_sql = """
             CASE 
-                WHEN lat BETWEEN 13.840122 AND 13.840291 AND lon BETWEEN 100.556587 AND 100.556797 THEN 'A'
-                WHEN lat BETWEEN 13.840467 AND 13.840654 AND lon BETWEEN 100.556777 AND 100.557033 THEN 'B'
-                WHEN lat BETWEEN 13.840382 AND 13.840477 AND lon BETWEEN 100.556622 AND 100.556716 THEN 'C'
+                WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
+                WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
+                WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
                 ELSE NULL
             END
         """
@@ -968,6 +969,7 @@ def get_route_matrix(
             FROM gate_crossings c1
             JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
             WHERE c1.gate != c2.gate
+              AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
               {hour_filter_trips}
         ),
         events AS (
@@ -986,9 +988,9 @@ def get_route_matrix(
         SELECT 
             t.origin || t.destination as route,
             COUNT(DISTINCT t.vin || '_' || CAST(t.t_start AS VARCHAR)) as trips,
-            COUNT(CASE WHEN e.event_type = 2 THEN 1 END) as brake,
-            COUNT(CASE WHEN e.event_type = 3 THEN 1 END) as turn,
-            COUNT(CASE WHEN e.event_type = 1 THEN 1 END) as accel
+            COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as brake,
+            COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as turn,
+            COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as accel
         FROM gate_transitions t
         LEFT JOIN events e ON t.vin = e.vin AND e.timestamp BETWEEN t.t_start AND t.t_end
         GROUP BY t.origin, t.destination
@@ -1033,6 +1035,157 @@ def get_route_matrix(
             "t_end": t_end
         }
     }
+
+
+
+@app.get("/api/route-trips")
+def get_route_trips(
+    route: str = Query(..., description="Route name, e.g. AB"),
+    t_start: str = Query(..., description="ISO start timestamp"),
+    t_end: str = Query(..., description="ISO end timestamp"),
+    event_filter: str = Query("all", description="all, 1, 2, 3, normal"),
+):
+    """Fetch vehicle crossings and their events on a specific route inside a time window."""
+    if len(route) != 2:
+        raise HTTPException(400, "Invalid route format. Expected 2 characters, e.g. AB")
+
+    origin, destination = route[0], route[1]
+    conn = _conn(); cur = conn.cursor()
+    cur.execute("SET statement_timeout = '20000'")
+
+    # Set up Gate WKTs if spatial is available
+    if _USE_DUCK and _SPATIAL_AVAILABLE:
+        wkt_a = _polygon_to_wkt(_GATE_POLYGONS['A'])
+        wkt_b = _polygon_to_wkt(_GATE_POLYGONS['B'])
+        wkt_c = _polygon_to_wkt(_GATE_POLYGONS['C'])
+        gate_sql = f"""
+            CASE 
+                WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
+                WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
+                WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
+                ELSE NULL
+            END
+        """
+    else:
+        gate_sql = """
+            CASE 
+                WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
+                WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
+                WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
+                ELSE NULL
+            END
+        """
+
+    query = f"""
+        WITH raw_gates AS (
+            SELECT 
+                vin, 
+                timestamp, 
+                event_type, 
+                vehicle_speed,
+                {gate_sql} as gate
+            FROM sensor
+            WHERE lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580
+              AND timestamp BETWEEN %s AND %s
+        ),
+        gate_crossings AS (
+            SELECT 
+                vin, 
+                timestamp,
+                gate,
+                ROW_NUMBER() OVER (PARTITION BY vin ORDER BY timestamp) as rn
+            FROM raw_gates
+            WHERE gate IS NOT NULL
+        ),
+        gate_transitions AS (
+            SELECT 
+                c1.vin,
+                c1.timestamp as t_start,
+                c2.timestamp as t_end,
+                c1.gate as origin,
+                c2.gate as destination
+            FROM gate_crossings c1
+            JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
+            WHERE c1.gate = %s AND c2.gate = %s
+              AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
+        )
+        SELECT 
+            t.vin,
+            t.t_start,
+            t.t_end,
+            s.timestamp as event_time,
+            s.lat::float8 as lat,
+            s.lon::float8 as lon,
+            s.event_type,
+            s.vehicle_speed
+        FROM gate_transitions t
+        JOIN sensor s ON t.vin = s.vin AND s.timestamp BETWEEN t.t_start AND t.t_end
+        ORDER BY t.t_start, s.timestamp
+    """
+
+    try:
+        cur.execute(query, (t_start, t_end, origin, destination))
+        rows = cur.fetchall()
+    except Exception as e:
+        cur.close(); conn.close()
+        raise HTTPException(500, f"Database query failed: {e}")
+
+    cur.close(); conn.close()
+
+    # Process and group rows by unique trip key (vin, t_start, t_end)
+    trips_dict = {}
+    for vin, t_start_dt, t_end_dt, ev_time, lat, lon, ev_type, spd in rows:
+        key = (vin, t_start_dt, t_end_dt)
+        if key not in trips_dict:
+            trips_dict[key] = {
+                "vin": vin,
+                "t_start": t_start_dt.isoformat() + "Z",
+                "t_end": t_end_dt.isoformat() + "Z",
+                "max_speed": 0.0,
+                "events": []
+            }
+        
+        trip = trips_dict[key]
+        if spd is not None:
+            trip["max_speed"] = max(trip["max_speed"], float(spd))
+            
+        if ev_type in (1, 2, 3) and ev_time is not None and lat is not None and lon is not None:
+            # Ensure the event occurred strictly inside the active road bounds (matching Route Matrix)
+            if 13.8380 <= float(lat) <= 13.8420 and 100.5550 <= float(lon) <= 100.5580:
+                # Avoid duplicate events at the exact same millisecond
+                if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
+                    trip["events"].append({
+                        "event_type": int(ev_type),
+                        "timestamp": ev_time.isoformat() + "Z",
+                        "lat": float(lat),
+                        "lon": float(lon),
+                        "speed": float(spd) if spd is not None else 0.0
+                    })
+
+    # Apply the event filter
+    filtered_trips = []
+    for trip in trips_dict.values():
+        has_accel = any(e["event_type"] == 1 for e in trip["events"])
+        has_brake = any(e["event_type"] == 2 for e in trip["events"])
+        has_turn = any(e["event_type"] == 3 for e in trip["events"])
+        has_any_event = len(trip["events"]) > 0
+
+        if event_filter == "1":
+            if has_accel:
+                filtered_trips.append(trip)
+        elif event_filter == "2":
+            if has_brake:
+                filtered_trips.append(trip)
+        elif event_filter == "3":
+            if has_turn:
+                filtered_trips.append(trip)
+        elif event_filter == "normal":
+            if not has_any_event:
+                filtered_trips.append(trip)
+        else: # "all"
+            filtered_trips.append(trip)
+
+    return {"trips": filtered_trips}
 
 
 

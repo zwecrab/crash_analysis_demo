@@ -150,3 +150,14 @@ export async function fetchSectionAnalytics() {
     })
   );
 }
+
+export async function fetchRouteTrips(route, eventFilter = 'all') {
+  const p = new URLSearchParams({
+    route: route,
+    t_start: iso(S.tStartMs),
+    t_end: iso(S.tEndMs),
+    event_filter: eventFilter
+  });
+  return api('/api/route-trips?' + p);
+}
+

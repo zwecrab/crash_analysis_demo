@@ -5,6 +5,8 @@ import { map } from './map.js';
 import { api, activeBbox, fetchAccidents, fetchAnalytics, sectionFor } from './api.js';
 import { updateCharts } from './charts.js';
 import { loadTrajectoryWindow, renderFrame, pause, setTime } from './playback.js';
+import { clearRouteFocus } from './routes.js';
+
 
 /* ── Clear Markers ──────────────────────────────────────── */
 export function clearAccMarkers() {
@@ -150,6 +152,10 @@ export function renderCollisionList() {
 export async function focusCollision(idx) {
   const acc = S.accidents[idx];
   if (!acc) return;
+
+  // Clear any active route tracking highlights to prevent dual overlay conflicts
+  clearRouteFocus();
+
   const tMs = new Date(acc.timestamp).getTime();
 
   pause();

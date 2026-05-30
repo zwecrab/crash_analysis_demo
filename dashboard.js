@@ -8,6 +8,8 @@ import { map, createCircle, onCircleChange, drawRoadGeometry, clearRoadGeometry,
 import { clearAccMarkers, renderCollisionList, clearFocus, renderAccidents } from './modules/collisions.js';
 import { fetchHeatmapData, enterHeatmapMode, exitHeatmapMode } from './modules/heatmap.js';
 import { play, pause, stop, setTime, loadTrajectoryWindow, renderFrame, showToast } from './modules/playback.js';
+import { initRoutesPanel, setActiveRoute, clearActiveRoute, refreshRouteTrips } from './modules/routes.js';
+
 
 /* ── Precision Time Jumping (DOM) ────────────────────────── */
 function _pad(n) {
@@ -313,30 +315,21 @@ document.getElementById('cm-apply').addEventListener('click', async () => {
 
 document.getElementById('btn-map-toggle').addEventListener('click', toggleMapStyle);
 
-document.getElementById('collision-severity-filter').addEventListener('change', function () {
-  S.severityFilter = this.value;
-  renderCollisionList();
-  clearAccMarkers();
-  S.accMarkers = [];
-  renderAccidents();
+document.getElementById('btn-toggle-smooth').addEventListener('click', function () {
+  S.smoothingEnabled = !S.smoothingEnabled;
+  if (S.smoothingEnabled) {
+    this.textContent = 'Normal Trip';
+    this.classList.remove('active');
+  } else {
+    this.textContent = 'Smoothen Trip';
+    this.classList.add('active');
+  }
+  renderFrame();
 });
 
-document.getElementById('collision-type-filter').addEventListener('change', function () {
-  S.typeFilter = this.value;
-  renderCollisionList();
-  clearAccMarkers();
-  S.accMarkers = [];
-  renderAccidents();
-});
+// Initialize routes sidebar panel and listeners
+initRoutesPanel();
 
-document.getElementById('btn-collapse-collisions').addEventListener('click', function () {
-  S.panelCollapsed = !S.panelCollapsed;
-  document.getElementById('collision-panel').classList.toggle('collapsed', S.panelCollapsed);
-  this.textContent = S.panelCollapsed ? '▶' : '◀';
-  setTimeout(() => map.invalidateSize(), 260);
-});
-
-document.getElementById('btn-clear-focus').addEventListener('click', clearFocus);
 
 document.getElementById('btn-mode-full').addEventListener('click', () => switchMode('full'));
 document.getElementById('btn-mode-road').addEventListener('click', () => switchMode('road'));
@@ -402,7 +395,7 @@ document.querySelectorAll('.rm-row').forEach(row => {
     }
   });
 
-  // Click: Toggle route-specific filtering on Leaflet.heat
+  // Click: Toggle active route and show trips/events on map
   row.addEventListener('click', () => {
     const wasActive = row.classList.contains('active');
 
@@ -411,23 +404,12 @@ document.querySelectorAll('.rm-row').forEach(row => {
 
     if (wasActive) {
       // De-select
-      S.activeRoute = null;
-      clearHoverRoute();
+      clearActiveRoute();
     } else {
       // Select
       row.classList.add('active');
-      S.activeRoute = route;
-      drawHoverRoute(route);
-      
-      // If we are not in heatmap mode, switch to heatmap mode to see the route specific heat overlay!
-      if (S.mode !== 'heatmap') {
-        switchMode('heatmap');
-        return; // switchMode will trigger fetchHeatmapData
-      }
+      setActiveRoute(route);
     }
-
-    // Refresh heatmap
-    fetchHeatmapData();
   });
 });
 
