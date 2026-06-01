@@ -1,9 +1,8 @@
 'use strict';
 
 import { S } from './state.js';
-import { api, sectionFor, roadBbox } from './api.js';
-import { map, drawRoadGeometry, clearRoadGeometry, renderSectionTiles } from './map.js';
-import { pause } from './playback.js';
+import { api, sectionFor } from './api.js';
+import { map } from './map.js';
 
 /* ── Heatmap Corridor Boundary Calculation ────────────────── */
 export const HEATMAP_ZONE = (() => {
@@ -47,8 +46,14 @@ export async function fetchHeatmapData() {
     lon_max: bb.lon_max,
     event_type: S.heatEventType,
     speed_bracket: S.heatSpeedBracket,
-    hour
+    hour: hour
   });
+
+  // Task 3: If a specific bidirectional route is active, pass it to filter event transitions
+  if (S.activeRoute) {
+    p.append('route', S.activeRoute);
+  }
+
   const loadEl = document.getElementById('hm-loading');
   const cntEl = document.getElementById('hm-point-count');
   if (loadEl) loadEl.classList.remove('hidden');
@@ -76,6 +81,7 @@ export function renderHeatLayer(points) {
     return;
   }
 
+  // Task 3: Section Crop on-click
   let displayPoints = points;
   if (S.activeSection) {
     displayPoints = points.filter(p => sectionFor(p[0], p[1]) === S.activeSection);
@@ -91,6 +97,7 @@ export function renderHeatLayer(points) {
 
   if (!displayPoints || !displayPoints.length) return;
 
+  // Stacks the heatmap cleanly below markers
   if (!map.getPane('heatmapPane')) {
     const pane = map.createPane('heatmapPane');
     pane.style.zIndex = 450;
@@ -123,52 +130,19 @@ export function clearHeatLayer() {
   S.heatmapCapped = false;
 }
 
-export async function enterHeatmapMode() {
-  S.mode = 'heatmap';
-  document.getElementById('heatmap-panel').classList.remove('hidden');
-  document.getElementById('btn-close-section').classList.add('hidden');
-  pause();
+/* ── Toggle Heatmap Layer Overlay (Task 2) ────────────────── */
+export async function toggleHeatmapOverlay(enable) {
+  S.heatmapEnabled = !!enable;
 
-  if (!S.road) {
-    try {
-      S.road = await api('/api/road');
-    } catch (e) {
-      return;
-    }
-  }
+  const btn = document.getElementById('btn-toggle-heatmap');
+  const panel = document.getElementById('heatmap-panel');
 
-  drawRoadGeometry();
+  if (btn) btn.classList.toggle('active', S.heatmapEnabled);
+  if (panel) panel.classList.toggle('hidden', !S.heatmapEnabled);
 
-  document.getElementById('section-panel').classList.remove('hidden');
-  renderSectionTiles();
-
-  if (S.activeSection) {
-    const sec = S.road.sections.find(s => s.id === S.activeSection);
-    if (sec) {
-      const ring = sec.polygon || [[sec.lat_min, sec.lon_min], [sec.lat_max, sec.lon_max]];
-      map.fitBounds(ring, { padding: [40, 40], animate: true, maxZoom: 19 });
-      const closeBtn = document.getElementById('btn-close-section');
-      if (closeBtn) {
-        closeBtn.classList.remove('hidden');
-        closeBtn.setAttribute(
-          'title',
-          `Back to full road view (currently focused on Section ${S.activeSection} · ${sec.label})`
-        );
-      }
-    }
+  if (S.heatmapEnabled) {
+    await fetchHeatmapData();
   } else {
-    const bb = roadBbox();
-    map.fitBounds([[bb.lat_min, bb.lon_min], [bb.lat_max, bb.lon_max]], { padding: [80, 80], maxZoom: 18, animate: true });
+    clearHeatLayer();
   }
-
-  fetchHeatmapData();
-}
-
-export async function exitHeatmapMode(to) {
-  clearHeatLayer();
-  if (to !== 'road') {
-    clearRoadGeometry();
-    document.getElementById('section-panel').classList.add('hidden');
-  }
-  document.getElementById('heatmap-panel').classList.add('hidden');
 }

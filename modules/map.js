@@ -134,7 +134,7 @@ export function drawRoadGeometry() {
       className: 'section-tooltip'
     });
 
-    if (S.mode === 'road' || S.mode === 'heatmap') {
+    if (S.mode === 'road') {
       rect.on('click', () => setActiveSection(S.activeSection === s.id ? null : s.id));
     }
     S.roadRects.push(rect);
@@ -173,9 +173,10 @@ export function setActiveSection(id) {
   S.cacheStart = null;
   S.cacheEnd = null;
   S.lastRiskDay = null;
-  if (S.mode === 'heatmap') {
+  if (S.heatmapEnabled) {
     renderHeatLayer(S.heatmapPoints);
-  } else {
+  }
+  if (S.mode === 'road') {
     Promise.allSettled([fetchAccidents(), fetchAnalytics().then(updateCharts)]).then(() =>
       loadTrajectoryWindow(S.curMs).then(renderFrame)
     );
@@ -385,10 +386,10 @@ export function toggleMapStyle() {
 export const ROUTE_PATHS = {
   AB: [[13.840191, 100.556739], [13.840540, 100.556951]],
   BA: [[13.840540, 100.556951], [13.840191, 100.556739]],
-  CA: [[13.840415, 100.556744], [13.840191, 100.556739]],
-  CB: [[13.840415, 100.556744], [13.840540, 100.556951]],
-  AC: [[13.840191, 100.556739], [13.840415, 100.556744]],
-  BC: [[13.840540, 100.556951], [13.840415, 100.556744]]
+  CA: [[13.840408, 100.556743], [13.840191, 100.556739]],
+  CB: [[13.840408, 100.556743], [13.840540, 100.556951]],
+  AC: [[13.840191, 100.556739], [13.840408, 100.556743]],
+  BC: [[13.840540, 100.556951], [13.840408, 100.556743]]
 };
 
 export const ROUTE_LABELS = {
@@ -403,7 +404,7 @@ export const ROUTE_LABELS = {
 export const GATE_COORDS = {
   A: [[13.8402134, 100.5568106], [13.8402584, 100.5567211], [13.8401686, 100.5566678], [13.8401220, 100.5567560]],
   B: [[13.8405280, 100.5568707], [13.8404676, 100.5569855], [13.8405560, 100.5570320], [13.8406097, 100.5569150]],
-  C: [[13.8404497, 100.5568122], [13.8404826, 100.5567311], [13.8403824, 100.5566774], [13.8403459, 100.5567566]]
+  C: [[13.8404666, 100.5568276], [13.8405093, 100.5567459], [13.8403466, 100.5566593], [13.8403101, 100.5567385]]
 };
 
 let hoverRoutePolyline = null;

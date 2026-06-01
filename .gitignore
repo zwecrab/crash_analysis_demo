@@ -38,3 +38,6 @@ sensor_local.duckdb.tmp/
 
 # local charts folder
 charts/
+
+# local scratch folder
+scratch/

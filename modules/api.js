@@ -127,6 +127,7 @@ export async function fetchSectionAnalytics() {
         t_end: iso(S.tEndMs)
       });
       if (cm) p.set('countermeasure_date', cm);
+      if (S.activeRoute) p.set('route', S.activeRoute);
       const t0 = performance.now();
       try {
         const d = await api('/api/analytics?' + p);

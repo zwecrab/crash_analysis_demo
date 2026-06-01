@@ -13,7 +13,8 @@ The **L-DCM Crash Risk Analysis Dashboard** is a state-of-the-art telematics and
 * **Safety Event Detection**: Identifies harsh braking, sudden acceleration, and sharp turn incidents along the road corridor.
 * **Collision Forensic Investigation**: Allows forensically examining vehicle speed, g-forces, and telemetry bursts up to ±30 minutes around a collision event.
 * **Before/After Analysis**: Measures the statistical effectiveness of physical road safety interventions (e.g., lane dividers) by comparing crash rates and warning events before and after a specified countermeasure date.
-* **Dynamic Route Matrix**: Calculates gate-to-gate traffic flows across six main routes (AB, AC, BA, BC, CA, CB) to isolate where risks are highest.
+* **Dynamic Bidirectional Route Matrix**: Calculates gate-to-gate traffic flows across two main combined routes: **`A ↔ C`** (North ↔ West) and **`B ↔ C`** (South ↔ West) to isolate where risks are highest.
+* **Toggleable Heatmap Layer**: Evaluates driving event density as a toggleable map overlay sitting non-disruptively under vehicle animations.
 
 ---
 
@@ -57,13 +58,13 @@ The local backend connects to a high-performance **DuckDB** database engine. Duc
 * **`34`**: **Side Collision (Idling)** (Red Marker)
 
 #### C. Spatial Gate Boundaries
-Spatial bounding boxes are configured as gates to isolate transitions. The backend uses DuckDB's `ST_Within` when spatial extensions are loaded, with a reliable bounding-box coordinate fallback:
+Gate coordinate boundaries and spatial math are defined cleanly in `coordinates.py` for maximum reuse:
 * **Gate A (North Entrance/Exit)**: 
-  * Bounding Box: `lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569`
+  * Vertices: `[[13.8402134, 100.5568106], [13.8402584, 100.5567211], [13.8401686, 100.5566678], [13.8401220, 100.5567560]]`
 * **Gate B (South Entrance/Exit)**: 
-  * Bounding Box: `lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571`
+  * Vertices: `[[13.8405280, 100.5568707], [13.8404676, 100.5569855], [13.8405560, 100.5570320], [13.8406097, 100.5569150]]`
 * **Gate C (West/Gate C Connector)**: 
-  * Bounding Box: `lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569`
+  * Vertices: `[[13.8404666, 100.5568276], [13.8405093, 100.5567459], [13.8403466, 100.5566593], [13.8403101, 100.5567385]]`
 * **Active Road Corridor limits**: `lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580`
 
 ---
@@ -83,46 +84,41 @@ Spatial bounding boxes are configured as gates to isolate transitions. The backe
 * **ES6 Modules**: Modular JS structures (`modules/state.js`, `modules/playback.js`, `modules/routes.js`, etc.) maintain pristine decoupling.
 
 ### C. Deployment & Hosting
-* **Hugging Face Spaces**: Deployed as a Dockerized Python Space. Automatic builds are triggered on every `git push origin main`.
+* **Hugging Face Spaces**: Deployed as a Dockerized Python Space. Automatic builds are triggered on every `git push origin main`. (Note: Pushes are currently withheld and kept local for review).
 
 ---
 
 ## 4. Code Implemented & Architectural Enhancements
 
-During recent development cycles, several critical mathematical and UX synchronization fixes were implemented to establish clean consistency across the app:
+Recent development cycles refactored the app into a premium, decoupled architecture and consolidated routes for maximum versatility:
 
-### 1. 60-Minute Telematics Pause-Split Threshold (Sessionization)
-* **The Problem**: Consecutive gate crossings occurring hours or days apart (such as a vehicle entering Gate B, parking for 4 hours, then exiting Gate C) were treated as a single massive trip, drawing bypassed diagonal lines across the map.
-* **The Fix**: Added the transition window limit `AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'` in:
-  1. `/api/route-trips` (Vehicle sidebar trips builder)
-  2. `/api/route-matrix` (Analytics table compiler)
-  3. `/api/heatmap` (Hotspot point cloud loader)
-* **Result**: Effectively splits parked or offline vehicles into separate trips while keeping slow-moving bumper-to-bumper traffic jams grouped as a single traversal.
+### 1. Code Decoupling & Modularization (Task 4)
+* **The Refactoring**: Removed all hardcoded coordinates, bounding boxes, and raw SQL queries from the main router in `app.py`.
+* **The Modules**:
+  * `coordinates.py`: Standardizes gate geometries and polygon-containment filters. Includes a **dynamic SQL gate clause compiler** (`get_gate_sql()`) which automatically computes precise gate bounding boxes and spatial checks from polygons, allowing instant scaling to new gate positions or datasets.
+  * `sql_schemas.py`: Houses clean, parameterized Python query functions, completely abstracting data access from endpoint routing.
+* **Result**: `app.py` is now a pure, lightweight endpoint shell, highly readable and reusable.
 
-### 2. Distinct Trip-Level Event Counts in Analytics Table
-* **The Problem**: The Route Matrix table was previously aggregating every raw event occurrence. If a single vehicle on route `A ➔ C` triggered 5 brakes during a single traversal, the table cell reported `5` but the sidebar only displayed the `3` distinct trips that had brakes, causing confusion.
-* **The Fix**: Rewrote the SQL query inside the `/api/route-matrix` endpoint in [app.py](file:///d:/LDCM/L-DCM%20Crash%20Risk%20Analysis/app.py) to aggregate distinct trip IDs containing alerts instead of counting raw occurrences:
-  ```sql
-  COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as brake,
-  COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as turn,
-  COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as accel
-  ```
-* **Result**: The table counts now perfectly match the trip counts and badges shown in the left sidebar.
+### 2. Consolidated Bidirectional Routes (Task 1)
+* **The Change**: Disabled the `A ➔ B` and `B ➔ A` routes which represent bypass highway traffic. Combined `A ➔ C` and `C ➔ A` into a single bidirectional route **`A ↔ C`** (North ↔ West), and `B ➔ C` and `C ➔ B` into **`B ↔ C`** (South ↔ West).
+* **Backend Aggregations**: Updated `sql_schemas.py` and `app.py` to aggregate bidirectional transitions and count distinct trip IDs. `/api/route-trips` returns the specific `origin` and `destination` fields for each crossing.
+* **Sidebar Details**: The sidebar trips list displays the actual direction of travel (e.g. **`A ➔ C`** or **`C ➔ A`**) in the trip metadata for complete clarity.
 
-### 3. Complete Bypassed Trajectory Animation (`S.focusWaypoints`)
-* **The Problem**: When a vehicle started outside the circular Full Map boundary, it was filtered out by the background `/api/trajectory` query limits and did not show up on the map.
-* **The Fix**: Updated `renderFrame()` in [modules/playback.js](file:///d:/LDCM/L-DCM%20Crash%20Risk%20Analysis/modules/playback.js) to animate the active focused vehicle using `S.focusWaypoints` (populated by the unfiltered `/api/vehicle-trajectory` endpoint) instead of `S.trajs` (which is filtered by spatial bounds).
-* **Result**: The focused vehicle will reliably animate from its absolute origin all the way to its destination, even if it starts or exits outside the visible boundaries.
+### 3. Non-Disruptive Heatmap Overlay (Task 2)
+* **The Change**: Refactored the heatmap from an exclusive screen "view mode" into a **toggleable layer overlay** (`S.heatmapEnabled`). Toggling it ON shows the floating `#heatmap-panel` filter control card, and toggling it OFF hides it.
+* **Continuous Playback**: Because `S.mode` remains in its native mode (`'full'` or `'road'`), clicking the heatmap toggle does **not** stop the timeline, does **not** hide vehicle markers, and does **not** hide accident pins. The heatmap sits in a dedicated map pane (`heatmapPane`, `zIndex: 450`) below vehicle markers but above the base map layer, ensuring perfect layered stacking.
 
-### 4. Focused-Trip Vehicle Isolation
-* **The Fix**: When a trip is selected in the sidebar, `renderFrame()` hides all other vehicle markers, leaving only the focused vehicle visible. This provides a clean, focused, and clutter-free review environment.
+### 4. Context-Specific Heatmap Filtering (Task 3)
+* **Road Section Cropping**: Clicking a breakdown card in road mode calls `setActiveSection(id)` which automatically triggers `renderHeatLayer(S.heatmapPoints)`, instantly cropping the active heatmap points to show only inside that section's boundary in the browser on the fly.
+* **Route Traversal Filtering**: Clicking a Route Matrix row (`A ↔ C` or `B ↔ C`) filters the heatmap strictly to events recorded during those specific bidirectional route transitions (`AC` or `BC`) by querying `/api/heatmap?route=...` from the backend.
 
-### 5. Origin-Gate Spawn Alignment
-* **The Fix**: When a sidebar trip is selected, [modules/routes.js](file:///d:/LDCM/L-DCM%20Crash%20Risk%20Analysis/modules/routes.js) jumps the timeline start directly to `tStartMs` (trip beginning) rather than the midpoint `tMidMs`. This ensures the vehicle marker spawns precisely on the green `"Trip origin gate"` marker when loaded.
+### 5. Origin-Gate Spawn Alignment & Trajectory Cropping
+* **The Math**: Previously, start/end markers were drawn at the absolute beginning and end of the fetched 10-minute trajectory window (which includes driving before/after gate crossings).
+* **The Fix**: We updated `drawTripFocusedTrack()` in `modules/routes.js` to locate the exact waypoints closest to `t_start` and `t_end`. The start/end markers are placed precisely at these gate crossing coordinates, and the Coral trajectory line is cropped strictly between these points. This ensures the vehicle marker spawns precisely on the green `"Trip origin gate"` marker when loaded, and moves exactly along the highlighted path.
 
-### 6. Dynamic Trajectory Smoothing Toggle
-* **The Fix**: Added a button labeled **"Normal Trip"** in the top header. Clicking it toggles `S.smoothingEnabled` to `false` and updates the label to **"Smoothen Trip"**. 
-* In [modules/playback.js](file:///d:/LDCM/L-DCM%20Crash%20Risk%20Analysis/modules/playback.js), `interp()` bypasses linear fractional frame blending and vector dead-reckoning when `smoothingEnabled` is off, displaying raw database coordinate changes discretely.
+### 6. Phase 2: Per-Section Breakdown Route Filtering & SRMA Event Restrictions
+* **Per-Section Breakdown Route Filtering**: When a bidirectional route (e.g. `A ↔ C` or `B ↔ C`) is active in the Route Matrix, the section tiles at the bottom are automatically filtered to show only safety events recorded for vehicles during their active crossing. The backend `/api/analytics` endpoint is updated to support this transition CTE filter, and the frontend ES6 modules automatically sync fetches on route selections or clears.
+* **SRMA Event Restrictions**: To target marking effectiveness, safety warnings (`harsh_braking`, `sudden_acceleration`, and `sharp_turn`) in both the Route Analysis Matrix and trips sidebar details lists are restricted strictly to coordinates inside the **SRMA (Section B) Warning Zone** polygon and bounding box (dynamically loaded from `coordinates.py`), while normal traversals (Trips) remain open over the wide corridor.
 
 ---
 
@@ -133,7 +129,7 @@ The dashboard layout is divided into three primary segments:
 ### A. Left Sidebar: "Route Trips" Panel
 * **Purpose**: Visible only when a route row in the Analytics table is active.
 * **Trip Filter**: Dropdown menu allows selecting `All Trips`, `Sudden Acceleration`, `Harsh Braking`, `Sharp Turn`, or `Normal Driving`.
-* **Trip List**: Displays vehicle records containing tail-VIN labels, start timestamps, maximum speeds, and semantic alert badges.
+* **Trip List**: Displays vehicle records containing tail-VIN labels, start timestamps, direction of travel (e.g. `C ➔ A`), maximum speeds, and semantic alert badges.
 * **Trip Highlight**: Selecting a trip triggers playback focus, draws the active trajectory on the map, draws specific event markers, and displays a peach `"Highlighting ···[VIN]"` status bar with a `"Clear"` option.
 
 ### B. Center Canvas: Interactive Leaflet Map
@@ -142,7 +138,7 @@ The dashboard layout is divided into three primary segments:
 * **Styling Toggle**: A toggle in the top bar switches between a dark CartoDB backdrop and Google Maps Satellite/Road views.
 
 ### C. Right Sidebar: "Analytics" Panel
-* **Route Analysis Matrix**: Interactive grid showing trip volume and safety incident counts per route.
+* **Route Analysis Matrix**: Interactive 2-row grid (`A ↔ C` and `B ↔ C`) showing trip volume and safety incident counts per route.
 * **Event Type Breakdown**: Chart.js donut chart illustrating safety alert distributions.
 * **Before vs After Comparisons**: Charts showing crash reduction and warning occurrences around a custom date input (interfaced via standard Date picker and CM Apply triggers).
 
@@ -152,7 +148,7 @@ The dashboard layout is divided into three primary segments:
 
 Any taking-over agent should note the following constraints to prevent regressions:
 
-1. **DuckDB Local Write Restrictions**: The DuckDB database `sensor_local.duckdb` is read-only. Attempts to write logs or insert mock telemetry points directly to the `sensor` table will fail.
-2. **Modulo Sampling for Background Traffic**: To prevent browser performance degradation under high loads, the general `/api/trajectory` endpoint samples data using modulo checks. This means very brief event spikes (e.g. 1-second accelerations) for background (non-focused) vehicles may occasionally skip frames on the map if they fall on odd-modulo seconds. *(Note: This is completely resolved for focused vehicles, which use unfiltered trajectory coordinates).*
-3. **Browser Cache Retention on ES6 Modules**: Since files inside the `/modules` folder are ES6 classes, aggressive browser caching may cause outdated scripts to load. We have applied `Cache-Control: no-store, no-cache, must-revalidate` middleware headers in FastAPI, but clients should still run a hard refresh (`Ctrl + F5`) if they suspect local scripts are out of sync.
-4. **FastAPI Query Limits**: The `/api/vehicle-trajectory` endpoint enforces a query limit of 5,000 coordinate rows and restricting windows up to 60 minutes to prevent browser canvas and Leaflet crashes.
+1. **DuckDB Local Write Restrictions**: The DuckDB database `sensor_local.duckdb` is read-only.
+2. **Modulo Sampling for Background Traffic**: Modulo-sampling is used to prevent browser performance degradation under high loads, but focused vehicles are animated using complete, unfiltered trajectory coordinates.
+3. **Browser Cache Retention on ES6 Modules**: aggressive browser caching may cause outdated scripts to load. Use `Ctrl + F5` if scripts seem out of sync.
+4. **FastAPI Query Limits**: The `/api/vehicle-trajectory` endpoint enforces a query limit of 5,000 coordinate rows and restricts windows to 60 minutes to prevent browser crashes.

@@ -1,15 +1,8 @@
 """
 app.py — L-DCM Crash Risk Analysis Dashboard (V2)
 
-Endpoints
-    GET  /                → serve map_report.html
-    GET  /api/meta        → time range, data bounds, label maps
-    GET  /api/trajectory  → sampled waypoint arrays per vehicle
-    GET  /api/accidents   → collision events with severity
-    GET  /api/analytics   → event breakdown, crash freq, before/after, risk
-    POST /api/predict     → prediction model stub
-
-Run:  .venv\\Scripts\\uvicorn app:app --reload --port 8000
+Decoupled main router: All spatial coordinate boundaries are defined in coordinates.py,
+and all parameterized database queries are defined in sql_schemas.py.
 """
 
 import math, os, json, re
@@ -23,6 +16,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db_connection import get_connection
+import coordinates
+import sql_schemas
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -41,80 +36,9 @@ async def add_cache_control_headers(request: Request, call_next):
 
 app.mount("/modules", StaticFiles(directory=os.path.join(_DIR, "modules")), name="modules")
 
-# ── Precise Spatial Boundary Geometry (Kamphaeng Phet 6 Rd) ──
-def _load_road_sections():
-    path = os.path.join(_DIR, "road.json")
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return json.load(f).get("sections", [])
-        except Exception as e:
-            print(f"[app] Error loading road.json: {e}")
-    return []
-
-_ROAD_SECTIONS = _load_road_sections()
-_ROAD_POLYGONS = [s["polygon"] for s in _ROAD_SECTIONS]
-
-_GATE_POLYGONS = {
-    'A': [[13.8402134, 100.5568106], [13.8402584, 100.5567211], [13.8401686, 100.5566678], [13.8401220, 100.5567560]],
-    'B': [[13.8405280, 100.5568707], [13.8404676, 100.5569855], [13.8405560, 100.5570320], [13.8406097, 100.5569150]],
-    'C': [[13.8404497, 100.5568122], [13.8404826, 100.5567311], [13.8403824, 100.5566774], [13.8403459, 100.5567566]]
-}
-
-# Combined bbox of all sections — used to gate polygon filtering in analytics.
-if _ROAD_SECTIONS:
-    _ROAD_BBOX = {
-        "lat_min": min(s["lat_min"] for s in _ROAD_SECTIONS),
-        "lat_max": max(s["lat_max"] for s in _ROAD_SECTIONS),
-        "lon_min": min(s["lon_min"] for s in _ROAD_SECTIONS),
-        "lon_max": max(s["lon_max"] for s in _ROAD_SECTIONS),
-    }
-else:
-    _ROAD_BBOX = None
-
-
-def _relevant_polygons(lat_min: float, lat_max: float,
-                       lon_min: float, lon_max: float) -> list:
-    """Return the road polygon(s) relevant for this request bbox.
-
-    Tight tolerance (0.0001 deg ~ 11 m) matches an exact section bbox.
-    If exactly one section matches → use only that section's polygon so
-    per-section analytics are not inflated by the adjacent-section overlap
-    zone (sections B & C share bbox values within 0.001 deg of each other,
-    which broke the earlier looser tolerance).
-    If zero or multiple sections match → fall back to all polygons
-    (combined road view or circle/general view).
-    """
-    _TOL = 0.0001
-    matches = [
-        s for s in _ROAD_SECTIONS
-        if abs(s["lat_min"] - lat_min) <= _TOL
-        and abs(s["lat_max"] - lat_max) <= _TOL
-        and abs(s["lon_min"] - lon_min) <= _TOL
-        and abs(s["lon_max"] - lon_max) <= _TOL
-    ]
-    return [matches[0]["polygon"]] if len(matches) == 1 else _ROAD_POLYGONS
-
-def _point_in_polygon(lat, lon, poly):
-    inside = False
-    n = len(poly)
-    for i in range(n):
-        j = (i - 1) % n
-        yi, xi = poly[i][0], poly[i][1]
-        yj, xj = poly[j][0], poly[j][1]
-        intersect = ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
-        if intersect:
-            inside = not inside
-    return inside
-
 # ── DuckDB: download from Dropbox/URL if DATABASE_DOWNLOAD_URL is set ────────
 def _maybe_download_duckdb() -> str | None:
-    """Download sensor_local.duckdb from DATABASE_DOWNLOAD_URL secret if needed.
-
-    Tries /data/ first (HF persistent storage — survives restarts),
-    then /tmp/ (ephemeral fallback). Skips download if file already exists.
-    Returns the local path on success, None otherwise.
-    """
+    """Download sensor_local.duckdb from DATABASE_DOWNLOAD_URL secret if needed."""
     import urllib.request
 
     url = os.getenv("DATABASE_DOWNLOAD_URL")
@@ -124,7 +48,6 @@ def _maybe_download_duckdb() -> str | None:
     destinations = ["/data/sensor_local.duckdb", "/tmp/sensor_local.duckdb"]
 
     for dest in destinations:
-        # Already downloaded — reuse it
         if os.path.exists(dest):
             mb = os.path.getsize(dest) / 1_000_000
             print(f"[app] DuckDB already present at {dest} ({mb:.0f} MB) — skipping download")
@@ -151,18 +74,13 @@ def _maybe_download_duckdb() -> str | None:
         except Exception as exc:
             print(f"[app] Download to {dest} failed: {exc}")
             if os.path.exists(dest):
-                os.remove(dest)   # remove partial file
+                os.remove(dest)
 
     print("[app] DuckDB download failed — no writable destination found")
     return None
 
 
 # ── DuckDB local mode ─────────────────────────────────────────
-# Search order:
-#   1. LOCAL_DB_PATH env var (explicit override)
-#   2. DATABASE_DOWNLOAD_URL secret → download to /data/ or /tmp/
-#   3. Same folder as app.py (local dev)
-#   4. /data/sensor_local.duckdb (HF persistent storage, pre-placed)
 _downloaded = _maybe_download_duckdb()
 _DUCK_CANDIDATES = [
     os.getenv("LOCAL_DB_PATH"),
@@ -174,7 +92,6 @@ _LOCAL_DB = next((p for p in _DUCK_CANDIDATES if p and os.path.exists(p)), None)
 _USE_DUCK = _LOCAL_DB is not None
 
 if _USE_DUCK:
-    # pyrefly: ignore [missing-import]
     import duckdb as _duckdb
     print(f"[app] LOCAL mode — DuckDB: {_LOCAL_DB}")
 else:
@@ -190,16 +107,11 @@ class _DuckCursor:
         self._res = None
 
     def execute(self, sql, params=()):
-        # 1. psycopg2 uses %s → DuckDB uses ?
-        # 2. psycopg2 escapes literal % as %% → unescape to %
         duck_sql = sql.replace("%%", "%").replace("%s", "?")
 
-        # 3. DuckDB SET statements are silently ignored (no timeout support)
         if duck_sql.strip().upper().startswith("SET"):
             return
 
-        # 4. PostgreSQL TABLESAMPLE SYSTEM(n) → DuckDB USING SAMPLE in subquery
-        #    "FROM tbl TABLESAMPLE SYSTEM(1)" → "FROM (SELECT * FROM tbl USING SAMPLE 1 PERCENT) _s"
         duck_sql = re.sub(
             r'FROM\s+(\w+)\s+TABLESAMPLE\s+SYSTEM\s*\(\s*\d+\s*\)',
             r'FROM (SELECT * FROM \1 USING SAMPLE 1 PERCENT) _s',
@@ -315,12 +227,7 @@ def get_meta():
     conn = _conn()
     cur = conn.cursor()
     cur.execute("SET statement_timeout = '30000'")
-    cur.execute("""
-        SELECT MIN(timestamp), MAX(timestamp),
-               MIN(lat)::float8, MAX(lat)::float8,
-               MIN(lon)::float8, MAX(lon)::float8
-        FROM sensor
-    """)
+    cur.execute(sql_schemas.get_meta_query())
     row = cur.fetchone()
     if not row or not row[0]:
         cur.close(); conn.close()
@@ -328,34 +235,19 @@ def get_meta():
 
     t_min, t_max = row[0], row[1]
 
-    # Find the busiest 10-minute window using a fast tablesample scan.
-    # TABLESAMPLE SYSTEM(1) reads ~1% of pages — very fast on large tables.
-    # This gives us a good starting point so the animation opens on live traffic,
-    # not an empty early-morning stretch.
     try:
         cur.execute("SET statement_timeout = '10000'")
-        cur.execute("""
-            SELECT DATE_TRUNC('hour', timestamp) +
-                   (FLOOR(EXTRACT(MINUTE FROM timestamp) / 10) * interval '10 minutes') AS window,
-                   COUNT(*) AS cnt
-            FROM sensor TABLESAMPLE SYSTEM(1)
-            GROUP BY 1
-            ORDER BY 2 DESC
-            LIMIT 1
-        """)
+        cur.execute(sql_schemas.get_suggested_window_query())
         best = cur.fetchone()
         t_suggested = best[0].isoformat() + "Z" if best else (t_min.isoformat() + "Z")
     except Exception:
-        # Fallback: midpoint of the full date range
         t_suggested = (t_min + (t_max - t_min) / 2).isoformat() + "Z"
 
     cur.close(); conn.close()
     return {
-        # All timestamps include "Z" so the browser treats them as UTC regardless
-        # of the client's local timezone (critical for Bangkok UTC+7 users).
         "t_start":     t_min.isoformat() + "Z",
         "t_end":       t_max.isoformat() + "Z",
-        "t_suggested": t_suggested,   # frontend should start here, not at t_start
+        "t_suggested": t_suggested,
         "bounds": {"lat_min": row[2], "lat_max": row[3], "lon_min": row[4], "lon_max": row[5]},
         "event_labels": EVENT_LABELS,
         "collision_labels": COLLISION_LABELS,
@@ -370,65 +262,18 @@ def get_trajectory(
     lon_min: float = Query(...), lon_max: float = Query(...),
     sample_sec: int = Query(2, ge=1, le=30, description="Sample every N seconds"),
 ):
-    """Sampled waypoints per vehicle for smooth frontend animation.
-
-    Uses UNION ALL so normal cars (Basic stream — no event/collision flags) are
-    never crowded out by event rows.  Each branch gets its own LIMIT budget:
-      • Normal rows  → up to 9 000 rows (modulo-sampled, every sample_sec seconds)
-      • Event rows   → up to 3 000 rows (always included, no modulo gate)
-    """
+    """Sampled waypoints per vehicle for smooth frontend animation."""
     conn = _conn()
     cur  = conn.cursor()
     cur.execute("SET statement_timeout = '15000'")
-    cur.execute("""
-        -- Branch 1: normal driving (Basic 0x11 stream).
-        -- Modulo-sample so we don't overwhelm the wire; these cars have no
-        -- event_type or collision_type so the old single-query LIMIT starved them.
-        (SELECT vin, timestamp, lat::float8, lon::float8, direction,
-                vehicle_speed, event_type, collision_type, gx_acci
-         FROM sensor
-         WHERE timestamp BETWEEN %s AND %s
-           AND lat BETWEEN %s AND %s
-           AND lon BETWEEN %s AND %s
-           AND event_type    IS NULL
-           AND collision_type IS NULL
-           AND EXTRACT(EPOCH FROM timestamp)::bigint %% %s = 0
-         ORDER BY vin, timestamp
-         LIMIT 9000)
-
-        UNION ALL
-
-        -- Branch 2: PHYD events (0x21) and Accident events (0x32).
-        -- Always include every event row regardless of modulo.
-        (SELECT vin, timestamp, lat::float8, lon::float8, direction,
-                vehicle_speed, event_type, collision_type, gx_acci
-         FROM sensor
-         WHERE timestamp BETWEEN %s AND %s
-           AND lat BETWEEN %s AND %s
-           AND lon BETWEEN %s AND %s
-           AND (event_type IS NOT NULL OR collision_type IS NOT NULL)
-         ORDER BY vin, timestamp
-         LIMIT 3000)
-
-        ORDER BY vin, timestamp
-    """, (
-        # Branch 1 params
-        t_start, t_end, lat_min, lat_max, lon_min, lon_max, sample_sec,
-        # Branch 2 params
+    query = sql_schemas.get_trajectory_query(sample_sec)
+    cur.execute(query, (
+        t_start, t_end, lat_min, lat_max, lon_min, lon_max,
         t_start, t_end, lat_min, lat_max, lon_min, lon_max,
     ))
     rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # Identify VINs that have at least one non-null telemetry value across their
-    # waypoints.  The seven fields the user cares about are:
-    #   vehicle_speed, event_type, collision_type, gx_acci, gy_acci, gx_phyd, gy_phyd
-    # The trajectory query fetches vehicle_speed (spd), event_type (evt),
-    # collision_type (col), and gx_acci (gx).  The remaining three (gy_acci,
-    # gx_phyd, gy_phyd) are always co-null with the ones we already have:
-    #   • gy_acci is non-null iff gx_acci is non-null  (same collision burst)
-    #   • gx_phyd / gy_phyd are non-null iff event_type is non-null
-    # So checking (spd, evt, col, gx) is sufficient to cover all seven.
     vins_with_telemetry: set[str] = {
         vin for vin, _, _, _, _, spd, evt, col, gx in rows
         if any(x is not None for x in (spd, evt, col, gx))
@@ -437,9 +282,9 @@ def get_trajectory(
     trajs: dict[str, list] = {}
     for vin, ts, la, lo, d, spd, evt, col, gx in rows:
         if vin not in vins_with_telemetry:
-            continue   # skip pure-GPS vehicles with no useful telemetry
+            continue
         trajs.setdefault(vin, []).append({
-            "t":   ts.isoformat() + "Z",  # UTC-explicit so browser parses correctly
+            "t":   ts.isoformat() + "Z",
             "la":  la, "lo": lo,
             "d":   d,
             "s":   spd,
@@ -462,23 +307,15 @@ def get_accidents(
     """Collision events with severity and human labels."""
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '12000'")
-    cur.execute("""
-        SELECT vin, timestamp, lat::float8, lon::float8,
-               collision_type, gx_acci, gy_acci, vehicle_speed
-        FROM sensor
-        WHERE collision_type IS NOT NULL
-          AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s
-          AND timestamp BETWEEN %s AND %s
-        ORDER BY timestamp
-        LIMIT 500
-    """, (lat_min, lat_max, lon_min, lon_max, t_start, t_end))
+    query = sql_schemas.get_accidents_query()
+    cur.execute(query, (lat_min, lat_max, lon_min, lon_max, t_start, t_end))
     rows = cur.fetchall()
     cur.close(); conn.close()
 
     accidents = []
     vin_first: dict[str, str] = {}
     for vin, ts, la, lo, ct, gx, gy, spd in rows:
-        ts_str = ts.isoformat() + "Z"  # UTC-explicit
+        ts_str = ts.isoformat() + "Z"
         accidents.append({
             "vin": vin, "timestamp": ts_str,
             "lat": la, "lon": lo,
@@ -499,58 +336,45 @@ def get_analytics(
     t_start: Optional[str] = Query(None),
     t_end:   Optional[str] = Query(None),
     countermeasure_date: Optional[str] = Query(None),
+    route: Optional[str] = Query(None, description="Optional active route filter, e.g., AC, BC"),
 ):
-    """Event breakdown, crash frequency, before/after, risk score.
-
-    Option B polygon fix: fetch all event/collision rows from the bbox once,
-    then apply the same _point_in_polygon filter used by /api/heatmap.
-    This eliminates the 1-2 count discrepancy caused by overlapping section
-    bounding boxes double-counting events at section boundaries.
-    Falls back to bbox-only when no road polygons are configured.
-    """
+    """Event breakdown, crash frequency, before/after, risk score."""
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '25000'")
     bp = (lat_min, lat_max, lon_min, lon_max)
-    time_sql = "AND timestamp BETWEEN %s AND %s" if (t_start and t_end) else ""
     tp = (t_start, t_end) if (t_start and t_end) else ()
 
-    # ── Single pre-fetch: all event/collision rows inside the bbox ──────────
-    # bbox is the fast index pre-filter; polygon check below refines it.
-    # Only event rows are fetched (~few thousand), never the full 91 M table.
-    cur.execute(f"""
-        SELECT timestamp, lat::float8, lon::float8, event_type, collision_type
-        FROM sensor
-        WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
-          AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
-        ORDER BY timestamp
-    """, bp + tp)
+    query = sql_schemas.get_analytics_query(bool(t_start and t_end), route, _SPATIAL_AVAILABLE)
+    
+    # Task 1: Param order varies depending on if query contains raw_gates transitions CTE
+    if route:
+        params = tp + bp
+    else:
+        params = bp + tp
+
+    cur.execute(query, params)
     raw_rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # ── Polygon filter — gated by bbox match, uses only relevant polygon(s) ────
-    # Circle/full view sends a bbox larger than the road extent → no filtering.
-    # Road-focus view sends the road bbox or a single section bbox → filter with
-    # only the matching polygon(s) so per-section counts stay exact.
     _TOL = 0.001
     _road_focused = (
-        _ROAD_BBOX is not None
-        and lat_min >= _ROAD_BBOX["lat_min"] - _TOL
-        and lat_max <= _ROAD_BBOX["lat_max"] + _TOL
-        and lon_min >= _ROAD_BBOX["lon_min"] - _TOL
-        and lon_max <= _ROAD_BBOX["lon_max"] + _TOL
+        coordinates.ROAD_BBOX is not None
+        and lat_min >= coordinates.ROAD_BBOX["lat_min"] - _TOL
+        and lat_max <= coordinates.ROAD_BBOX["lat_max"] + _TOL
+        and lon_min >= coordinates.ROAD_BBOX["lon_min"] - _TOL
+        and lon_max <= coordinates.ROAD_BBOX["lon_max"] + _TOL
     )
 
     if _road_focused:
-        polys = _relevant_polygons(lat_min, lat_max, lon_min, lon_max)
+        polys = coordinates.relevant_polygons(lat_min, lat_max, lon_min, lon_max)
         rows = [
             (ts, la, lo, et, ct)
             for ts, la, lo, et, ct in raw_rows
-            if any(_point_in_polygon(la, lo, p) for p in polys)
+            if any(coordinates.point_in_polygon(la, lo, p) for p in polys)
         ]
     else:
-        rows = raw_rows   # circle/general view: all bbox events, no polygon trim
+        rows = raw_rows
 
-    # ── 1. Crash frequency & daily events (dense date fill) ─────────────────
     freq_map: dict = {}
     ev_map:   dict = {}
     for ts, _la, _lo, et, ct in rows:
@@ -575,8 +399,6 @@ def get_analytics(
         daily_events.append({"date": str(cur_day), "count": int(ev_map.get(cur_day, 0))})
         cur_day += timedelta(days=1)
 
-    # ── 2. Event breakdown ───────────────────────────────────────────────────
-    # event_type 1 = Sudden Acceleration, 2 = Harsh Braking, 3 = Sharp Turn
     sa = sum(1 for _, _, _, et, _  in rows if et == 1)
     hb = sum(1 for _, _, _, et, _  in rows if et == 2)
     st = sum(1 for _, _, _, et, _  in rows if et == 3)
@@ -589,7 +411,6 @@ def get_analytics(
         "collision":    {"count": co, "pct": round(co / tot * 100), "label": "Collision"},
     }
 
-    # ── 3. Before / After ────────────────────────────────────────────────────
     before_after = None
     if countermeasure_date:
         cm_dt = datetime.fromisoformat(countermeasure_date.replace("Z", ""))
@@ -603,7 +424,6 @@ def get_analytics(
             "countermeasure_date": countermeasure_date,
         }
 
-    # ── 4. Risk score ────────────────────────────────────────────────────────
     if t_start and t_end:
         days = max((
             datetime.fromisoformat(t_end.replace("Z", "")) -
@@ -628,25 +448,15 @@ def get_vehicle_trajectory(
     t_center: str = Query(..., description="ISO timestamp to centre the window on"),
     window_minutes: int = Query(5, ge=1, le=60, description="Half-window in minutes"),
 ):
-    """Full trajectory of a single vehicle around a time centre.
-
-    Returns every sensor row (no sampling) for detailed replay during
-    collision investigation.  The window is ±window_minutes around t_center.
-    """
+    """Full trajectory of a single vehicle around a time centre."""
     center_dt = datetime.fromisoformat(t_center.replace("Z", ""))
     t_lo = center_dt - timedelta(minutes=window_minutes)
     t_hi = center_dt + timedelta(minutes=window_minutes)
 
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '15000'")
-    cur.execute("""
-        SELECT timestamp, lat::float8, lon::float8, direction,
-               vehicle_speed, event_type, collision_type, gx_acci
-        FROM sensor
-        WHERE vin = %s AND timestamp BETWEEN %s AND %s
-        ORDER BY timestamp
-        LIMIT 5000
-    """, (vin, t_lo.isoformat(), t_hi.isoformat()))
+    query = sql_schemas.get_vehicle_trajectory_query()
+    cur.execute(query, (vin, t_lo.isoformat(), t_hi.isoformat()))
     rows = cur.fetchall()
     cur.close(); conn.close()
 
@@ -674,15 +484,6 @@ def get_blackspots():
     return []
 
 
-def _polygon_to_wkt(poly):
-    if not poly:
-        return ""
-    pts = [f"{pt[1]} {pt[0]}" for pt in poly]
-    if pts[0] != pts[-1]:
-        pts.append(pts[0])
-    return f"POLYGON(({', '.join(pts)}))"
-
-
 @app.get("/api/heatmap")
 def get_heatmap(
     lat_min: float = Query(...), lat_max: float = Query(...),
@@ -690,171 +491,36 @@ def get_heatmap(
     event_type:    int   = Query(0,  description="0=all events, 1=braking, 2=accel, 3=turning"),
     speed_bracket: int   = Query(0,  description="0=all, 1=0-60 km/h, 2=61-100, 3=100+"),
     hour:          int   = Query(-1, description="-1=all, 0-23=local Bangkok hour (UTC+7)"),
-    route:         Optional[str] = Query(None, description="Optional route filter, e.g. AB, CA"),
+    route:         Optional[str] = Query(None, description="Optional bidirectional route filter, e.g. AC, BC"),
 ):
-    """Heatmap point cloud for the chosen event-type / speed-bracket / hour filter.
-
-    Returns raw (lat, lon) pairs for event rows inside the bbox so Leaflet.heat
-    can render a kernel-density heatmap in the browser.  At most 60 000 points
-    are returned; the caller should display a warning if total exceeds this.
-    """
+    """Heatmap point cloud for the chosen event-type / speed-bracket / hour / route filter."""
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '30000'")
 
-    # --- Dynamic filter clauses (all inline — no user-controlled interpolation) ---
-    if event_type == 0:
-        event_sql = "AND event_type IS NOT NULL"
-    else:
-        # event_type is already validated as int by FastAPI; safe to inline
-        event_sql = f"AND event_type = {event_type}"
+    query = sql_schemas.get_heatmap_query(event_type, speed_bracket, hour, route, _SPATIAL_AVAILABLE)
 
-    if speed_bracket == 1:
-        speed_sql = "AND vehicle_speed BETWEEN 0 AND 60"
-    elif speed_bracket == 2:
-        speed_sql = "AND vehicle_speed BETWEEN 61 AND 100"
-    elif speed_bracket == 3:
-        speed_sql = "AND vehicle_speed > 100"
-    else:
-        speed_sql = ""   # 0 = all speeds (include NULL)
-
-    if 0 <= hour <= 23:
-        # Bangkok is UTC+7; add 7 hours before extracting the hour
-        hour_sql = f"AND CAST(EXTRACT(HOUR FROM timestamp + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-    else:
-        hour_sql = ""    # -1 = all hours
-
-    if route and len(route) == 2:
-        origin = route[0]
-        destination = route[1]
-        
-        if _USE_DUCK and _SPATIAL_AVAILABLE:
-            wkt_a = _polygon_to_wkt(_GATE_POLYGONS['A'])
-            wkt_b = _polygon_to_wkt(_GATE_POLYGONS['B'])
-            wkt_c = _polygon_to_wkt(_GATE_POLYGONS['C'])
-            gate_sql = f"""
-                CASE 
-                    WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
-                    WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
-                    WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
-                    ELSE NULL
-                END
-            """
-        else:
-            gate_sql = """
-                CASE 
-                    WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
-                    WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
-                    WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
-                    ELSE NULL
-                END
-            """
-            
-        # Optimized route-specific event query
-        query = f"""
-            WITH raw_gates AS (
-                SELECT 
-                    vin, 
-                    timestamp, 
-                    {gate_sql} as gate
-                FROM sensor
-                WHERE lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580
-            ),
-            gate_crossings AS (
-                SELECT 
-                    vin, 
-                    timestamp,
-                    gate,
-                    ROW_NUMBER() OVER (PARTITION BY vin ORDER BY timestamp) as rn
-                FROM raw_gates
-                WHERE gate IS NOT NULL
-            ),
-            gate_transitions AS (
-                SELECT 
-                    c1.vin,
-                    c1.timestamp as t_start,
-                    c2.timestamp as t_end
-                FROM gate_crossings c1
-                JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
-                WHERE c1.gate = '{origin}' AND c2.gate = '{destination}'
-                  AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
-            )
-            SELECT s.lat::float8, s.lon::float8
-            FROM sensor s
-            JOIN gate_transitions t ON s.vin = t.vin AND s.timestamp BETWEEN t.t_start AND t.t_end
-            WHERE s.lat BETWEEN %s AND %s AND s.lon BETWEEN %s AND %s
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-            LIMIT 60000
-        """
-        try:
-            cur.execute(query, (lat_min, lat_max, lon_min, lon_max))
-            rows = cur.fetchall()
-            cur.close(); conn.close()
-            filtered_points = [[r[0], r[1]] for r in rows]
-            return {
-                "points": filtered_points,
-                "total":  len(filtered_points),
-                "capped": len(rows) == 60000,
-                "filter": {
-                    "event_type":    event_type,
-                    "speed_bracket": speed_bracket,
-                    "hour":          hour,
-                    "route":         route
-                },
-            }
-        except Exception as e:
-            cur.close(); conn.close()
-            raise HTTPException(500, f"Database route query failed: {e}")
-
-
-    if _USE_DUCK and _SPATIAL_AVAILABLE and _ROAD_POLYGONS:
-        wkt_polys = [_polygon_to_wkt(p) for p in _ROAD_POLYGONS]
-        spatial_clauses = [f"ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt}'))" for wkt in wkt_polys]
-        spatial_sql = f"AND ({' OR '.join(spatial_clauses)})"
-
-        cur.execute(f"""
-            SELECT lat::float8, lon::float8
-            FROM sensor
-            WHERE lat  BETWEEN %s AND %s
-              AND lon  BETWEEN %s AND %s
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-              {spatial_sql}
-            LIMIT 60000
-        """, (lat_min, lat_max, lon_min, lon_max))
-
+    try:
+        cur.execute(query, (lat_min, lat_max, lon_min, lon_max))
         rows = cur.fetchall()
+    except Exception as e:
         cur.close(); conn.close()
+        raise HTTPException(500, f"Database heatmap query failed: {e}")
+    cur.close(); conn.close()
 
-        filtered_points = [[r[0], r[1]] for r in rows]
-    else:
-        cur.execute(f"""
-            SELECT lat::float8, lon::float8
-            FROM sensor
-            WHERE lat  BETWEEN %s AND %s
-              AND lon  BETWEEN %s AND %s
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-            LIMIT 60000
-        """, (lat_min, lat_max, lon_min, lon_max))
-
-        rows = cur.fetchall()
-        cur.close(); conn.close()
-
-        # Filter points precisely inside our oriented road section polygons (Python fallback)
+    # Apply precise road polygon containment in python fallback if spatial is off and no route filter is specified
+    if not _SPATIAL_AVAILABLE and not route and coordinates.ROAD_POLYGONS:
         filtered_points = []
         for r in rows:
             lat, lon = r[0], r[1]
             in_zone = False
-            for poly in _ROAD_POLYGONS:
-                if _point_in_polygon(lat, lon, poly):
+            for poly in coordinates.ROAD_POLYGONS:
+                if coordinates.point_in_polygon(lat, lon, poly):
                     in_zone = True
                     break
             if in_zone:
                 filtered_points.append([lat, lon])
+    else:
+        filtered_points = [[r[0], r[1]] for r in rows]
 
     return {
         "points": filtered_points,
@@ -864,17 +530,14 @@ def get_heatmap(
             "event_type":    event_type,
             "speed_bracket": speed_bracket,
             "hour":          hour,
+            "route":         route
         },
     }
 
 
 @app.get("/api/road")
 def get_road():
-    """Return the focused-road configuration (Kamphaeng Phet 6 Rd) from road.json.
-
-    Used by the frontend's Road-Focus mode to draw section rectangles and
-    fan out per-section analytics fetches.
-    """
+    """Return the focused-road configuration (Kamphaeng Phet 6 Rd) from road.json."""
     path = os.path.join(_DIR, "road.json")
     if os.path.exists(path):
         with open(path) as f:
@@ -891,114 +554,15 @@ def get_route_matrix(
     t_end:   Optional[str] = Query(None),
 ):
     """Origin-Destination (O-D) Route Matrix calculated dynamically in SQL.
-    Fast, optimized window queries on DuckDB ensure sub-second response times.
+    Task 1: Groups bidirectional AC/CA transitions under 'AC' and BC/CB under 'BC' and excludes AB/BA.
     """
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
 
-    # --- SQL filters ---
-    time_sql = "AND timestamp BETWEEN %s AND %s" if (t_start and t_end) else ""
-    tp = (t_start, t_end) if (t_start and t_end) else ()
-
-    if 0 <= hour <= 23:
-        hour_filter_events = f"AND CAST(EXTRACT(HOUR FROM timestamp + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-        hour_filter_trips = f"AND CAST(EXTRACT(HOUR FROM t_start + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-    else:
-        hour_filter_events = ""
-        hour_filter_trips = ""
-
-    if speed_bracket == 1:
-        speed_filter = "AND vehicle_speed BETWEEN 0 AND 60"
-    elif speed_bracket == 2:
-        speed_filter = "AND vehicle_speed BETWEEN 61 AND 100"
-    elif speed_bracket == 3:
-        speed_filter = "AND vehicle_speed > 100"
-    else:
-        speed_filter = ""
-
-    if _USE_DUCK and _SPATIAL_AVAILABLE:
-        wkt_a = _polygon_to_wkt(_GATE_POLYGONS['A'])
-        wkt_b = _polygon_to_wkt(_GATE_POLYGONS['B'])
-        wkt_c = _polygon_to_wkt(_GATE_POLYGONS['C'])
-        gate_sql = f"""
-            CASE 
-                WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
-                WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
-                WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
-                ELSE NULL
-            END
-        """
-    else:
-        gate_sql = """
-            CASE 
-                WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
-                WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
-                WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
-                ELSE NULL
-            END
-        """
-
-    query = f"""
-        WITH raw_gates AS (
-            SELECT 
-                vin, 
-                timestamp, 
-                event_type, 
-                vehicle_speed,
-                {gate_sql} as gate
-            FROM sensor
-            WHERE lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580
-              {time_sql}
-        ),
-        gate_crossings AS (
-            SELECT 
-                vin, 
-                timestamp,
-                gate,
-                ROW_NUMBER() OVER (PARTITION BY vin ORDER BY timestamp) as rn
-            FROM raw_gates
-            WHERE gate IS NOT NULL
-        ),
-        gate_transitions AS (
-            SELECT 
-                c1.vin,
-                c1.timestamp as t_start,
-                c2.timestamp as t_end,
-                c1.gate as origin,
-                c2.gate as destination
-            FROM gate_crossings c1
-            JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
-            WHERE c1.gate != c2.gate
-              AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
-              {hour_filter_trips}
-        ),
-        events AS (
-            SELECT 
-                vin, 
-                timestamp, 
-                event_type,
-                vehicle_speed
-            FROM sensor
-            WHERE event_type IN (1, 2, 3)
-              AND lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580
-              {time_sql}
-              {speed_filter}
-              {hour_filter_events}
-        )
-        SELECT 
-            t.origin || t.destination as route,
-            COUNT(DISTINCT t.vin || '_' || CAST(t.t_start AS VARCHAR)) as trips,
-            COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as brake,
-            COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as turn,
-            COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as accel
-        FROM gate_transitions t
-        LEFT JOIN events e ON t.vin = e.vin AND e.timestamp BETWEEN t.t_start AND t.t_end
-        GROUP BY t.origin, t.destination
-        ORDER BY route
-    """
+    query = sql_schemas.get_route_matrix_query(speed_bracket, hour, bool(t_start and t_end), _SPATIAL_AVAILABLE)
+    params = (t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
 
     try:
-        params = tp + tp if (t_start and t_end) else ()
         cur.execute(query, params)
         rows = cur.fetchall()
     except Exception as e:
@@ -1007,13 +571,10 @@ def get_route_matrix(
 
     cur.close(); conn.close()
 
+    # Pre-populate bidirectional rows
     matrix = {
-        "AB": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
         "AC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-        "BA": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
         "BC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-        "CA": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-        "CB": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
     }
 
     for route, trips, brake, turn, accel in rows:
@@ -1037,94 +598,23 @@ def get_route_matrix(
     }
 
 
-
 @app.get("/api/route-trips")
 def get_route_trips(
-    route: str = Query(..., description="Route name, e.g. AB"),
+    route: str = Query(..., description="Route name, e.g. AC, BC"),
     t_start: str = Query(..., description="ISO start timestamp"),
     t_end: str = Query(..., description="ISO end timestamp"),
     event_filter: str = Query("all", description="all, 1, 2, 3, normal"),
 ):
-    """Fetch vehicle crossings and their events on a specific route inside a time window."""
-    if len(route) != 2:
-        raise HTTPException(400, "Invalid route format. Expected 2 characters, e.g. AB")
+    """Fetch vehicle crossings and their events on a specific bidirectional route inside a time window."""
+    if route not in ("AC", "BC"):
+        raise HTTPException(400, "Invalid route. Expected 'AC' or 'BC'")
 
-    origin, destination = route[0], route[1]
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
-
-    # Set up Gate WKTs if spatial is available
-    if _USE_DUCK and _SPATIAL_AVAILABLE:
-        wkt_a = _polygon_to_wkt(_GATE_POLYGONS['A'])
-        wkt_b = _polygon_to_wkt(_GATE_POLYGONS['B'])
-        wkt_c = _polygon_to_wkt(_GATE_POLYGONS['C'])
-        gate_sql = f"""
-            CASE 
-                WHEN lat BETWEEN 13.8401 AND 13.8403 AND lon BETWEEN 100.5565 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_a}')) THEN 'A'
-                WHEN lat BETWEEN 13.8404 AND 13.8407 AND lon BETWEEN 100.5568 AND 100.5571 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_b}')) THEN 'B'
-                WHEN lat BETWEEN 13.8403 AND 13.8405 AND lon BETWEEN 100.5566 AND 100.5569 AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt_c}')) THEN 'C'
-                ELSE NULL
-            END
-        """
-    else:
-        gate_sql = """
-            CASE 
-                WHEN lat BETWEEN 13.840122 AND 13.840259 AND lon BETWEEN 100.556667 AND 100.556811 THEN 'A'
-                WHEN lat BETWEEN 13.840467 AND 13.840610 AND lon BETWEEN 100.556870 AND 100.557033 THEN 'B'
-                WHEN lat BETWEEN 13.840345 AND 13.840483 AND lon BETWEEN 100.556677 AND 100.556813 THEN 'C'
-                ELSE NULL
-            END
-        """
-
-    query = f"""
-        WITH raw_gates AS (
-            SELECT 
-                vin, 
-                timestamp, 
-                event_type, 
-                vehicle_speed,
-                {gate_sql} as gate
-            FROM sensor
-            WHERE lat BETWEEN 13.8380 AND 13.8420 AND lon BETWEEN 100.5550 AND 100.5580
-              AND timestamp BETWEEN %s AND %s
-        ),
-        gate_crossings AS (
-            SELECT 
-                vin, 
-                timestamp,
-                gate,
-                ROW_NUMBER() OVER (PARTITION BY vin ORDER BY timestamp) as rn
-            FROM raw_gates
-            WHERE gate IS NOT NULL
-        ),
-        gate_transitions AS (
-            SELECT 
-                c1.vin,
-                c1.timestamp as t_start,
-                c2.timestamp as t_end,
-                c1.gate as origin,
-                c2.gate as destination
-            FROM gate_crossings c1
-            JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
-            WHERE c1.gate = %s AND c2.gate = %s
-              AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
-        )
-        SELECT 
-            t.vin,
-            t.t_start,
-            t.t_end,
-            s.timestamp as event_time,
-            s.lat::float8 as lat,
-            s.lon::float8 as lon,
-            s.event_type,
-            s.vehicle_speed
-        FROM gate_transitions t
-        JOIN sensor s ON t.vin = s.vin AND s.timestamp BETWEEN t.t_start AND t.t_end
-        ORDER BY t.t_start, s.timestamp
-    """
+    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE)
 
     try:
-        cur.execute(query, (t_start, t_end, origin, destination))
+        cur.execute(query, (t_start, t_end))
         rows = cur.fetchall()
     except Exception as e:
         cur.close(); conn.close()
@@ -1134,13 +624,15 @@ def get_route_trips(
 
     # Process and group rows by unique trip key (vin, t_start, t_end)
     trips_dict = {}
-    for vin, t_start_dt, t_end_dt, ev_time, lat, lon, ev_type, spd in rows:
+    for vin, t_start_dt, t_end_dt, ev_time, lat, lon, ev_type, spd, origin, dest in rows:
         key = (vin, t_start_dt, t_end_dt)
         if key not in trips_dict:
             trips_dict[key] = {
                 "vin": vin,
                 "t_start": t_start_dt.isoformat() + "Z",
                 "t_end": t_end_dt.isoformat() + "Z",
+                "origin": origin,
+                "destination": dest,
                 "max_speed": 0.0,
                 "events": []
             }
@@ -1150,17 +642,18 @@ def get_route_trips(
             trip["max_speed"] = max(trip["max_speed"], float(spd))
             
         if ev_type in (1, 2, 3) and ev_time is not None and lat is not None and lon is not None:
-            # Ensure the event occurred strictly inside the active road bounds (matching Route Matrix)
-            if 13.8380 <= float(lat) <= 13.8420 and 100.5550 <= float(lon) <= 100.5580:
-                # Avoid duplicate events at the exact same millisecond
-                if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
-                    trip["events"].append({
-                        "event_type": int(ev_type),
-                        "timestamp": ev_time.isoformat() + "Z",
-                        "lat": float(lat),
-                        "lon": float(lon),
-                        "speed": float(spd) if spd is not None else 0.0
-                    })
+            # Restricts warnings strictly to the SRMA zone (Section B) for routes (Task 2)
+            if coordinates.SRMA_BBOX['lat_min'] <= float(lat) <= coordinates.SRMA_BBOX['lat_max'] and coordinates.SRMA_BBOX['lon_min'] <= float(lon) <= coordinates.SRMA_BBOX['lon_max']:
+                if coordinates.point_in_polygon(float(lat), float(lon), coordinates.SRMA_POLYGON):
+                    # Avoid duplicate events at the exact same millisecond
+                    if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
+                        trip["events"].append({
+                            "event_type": int(ev_type),
+                            "timestamp": ev_time.isoformat() + "Z",
+                            "lat": float(lat),
+                            "lon": float(lon),
+                            "speed": float(spd) if spd is not None else 0.0
+                        })
 
     # Apply the event filter
     filtered_trips = []
@@ -1188,11 +681,9 @@ def get_route_trips(
     return {"trips": filtered_trips}
 
 
-
 @app.get("/api/debug")
 def get_debug():
-    """Quick health-check: confirms DB is reachable and returns key data stats.
-    Visit http://localhost:8000/api/debug in the browser to diagnose issues."""
+    """Quick health-check: confirms DB is reachable and returns key data stats."""
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
 
@@ -1236,13 +727,7 @@ def get_debug():
 
 @app.post("/api/predict")
 async def predict(request: Request):
-    """Stub for prediction model. Returns dummy risk zones.
-
-    Expected input (from ML teammate):
-        {"vehicles": [{"vin": ..., "lat": ..., "lon": ..., "speed": ..., "direction": ...}, ...]}
-    Expected output:
-        {"predictions": [{"lat": ..., "lon": ..., "risk": 0-1, "label": "..."}, ...], "model_ready": false}
-    """
+    """Stub for prediction model. Returns dummy risk zones."""
     return {
         "predictions": [],
         "model_ready": False,

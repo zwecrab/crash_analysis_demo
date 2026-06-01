@@ -33,7 +33,7 @@
       <button class="tb-btn" id="btn-toggle-static" title="Hide all accidents and moving vehicles, and lock the timeline">Hide Active Data</button>
     </div>
     <div class="tb-group">
-      <button class="tb-btn" id="btn-mode-heatmap" title="Heatmap analysis of driving events along Kamphaeng Phet 6 Rd segment">⬡ Heatmap</button>
+      <button class="tb-btn" id="btn-toggle-heatmap" title="Toggle heatmap analysis layer on the map">⬡ Heatmap</button>
     </div>
     <div class="tb-group">
       <button class="tb-btn" id="btn-map-toggle" title="Toggle between Dark mode and Google Map Normal style">🗺️ Google Map</button>
@@ -161,53 +161,19 @@
               </tr>
             </thead>
             <tbody>
-              <tr class="rm-row" id="rm-row-AB" data-route="AB">
-                <td class="rm-route-name">A ➔ B <span class="rm-route-desc">North to South</span></td>
-                <td id="rm-AB-trips" class="rm-num">—</td>
-                <td id="rm-AB-brake" class="rm-num">—</td>
-                <td id="rm-AB-turn" class="rm-num">—</td>
-                <td id="rm-AB-accel" class="rm-num">—</td>
-              </tr>
               <tr class="rm-row" id="rm-row-AC" data-route="AC">
-                <td class="rm-route-name">A ➔ C <span class="rm-route-desc">North to West</span></td>
+                <td class="rm-route-name">A ↔ C <span class="rm-route-desc">North ↔ West</span></td>
                 <td id="rm-AC-trips" class="rm-num">—</td>
                 <td id="rm-AC-brake" class="rm-num">—</td>
                 <td id="rm-AC-turn" class="rm-num">—</td>
                 <td id="rm-AC-accel" class="rm-num">—</td>
               </tr>
-              <tr class="rm-row" id="rm-row-BA" data-route="BA">
-                <td class="rm-route-name">B ➔ A <span class="rm-route-desc">South to North</span></td>
-                <td id="rm-BA-trips" class="rm-num">—</td>
-                <td id="rm-BA-brake" class="rm-num">—</td>
-                <td id="rm-BA-turn" class="rm-num">—</td>
-                <td id="rm-BA-accel" class="rm-num">—</td>
-              </tr>
               <tr class="rm-row" id="rm-row-BC" data-route="BC">
-                <td class="rm-route-name">B ➔ C <span class="rm-route-desc">South to West</span></td>
+                <td class="rm-route-name">B ↔ C <span class="rm-route-desc">South ↔ West</span></td>
                 <td id="rm-BC-trips" class="rm-num">—</td>
                 <td id="rm-BC-brake" class="rm-num">—</td>
                 <td id="rm-BC-turn" class="rm-num">—</td>
                 <td id="rm-BC-accel" class="rm-num">—</td>
-              </tr>
-              <tr class="rm-row rm-connector" id="rm-row-CA" data-route="CA">
-                <td class="rm-route-name">
-                  <span>C ➔ A <span class="connector-badge">Gate C</span></span>
-                  <span class="rm-route-desc">West to North</span>
-                </td>
-                <td id="rm-CA-trips" class="rm-num">—</td>
-                <td id="rm-CA-brake" class="rm-num">—</td>
-                <td id="rm-CA-turn" class="rm-num">—</td>
-                <td id="rm-CA-accel" class="rm-num">—</td>
-              </tr>
-              <tr class="rm-row rm-connector" id="rm-row-CB" data-route="CB">
-                <td class="rm-route-name">
-                  <span>C ➔ B <span class="connector-badge">Gate C</span></span>
-                  <span class="rm-route-desc">West to South</span>
-                </td>
-                <td id="rm-CB-trips" class="rm-num">—</td>
-                <td id="rm-CB-brake" class="rm-num">—</td>
-                <td id="rm-CB-turn" class="rm-num">—</td>
-                <td id="rm-CB-accel" class="rm-num">—</td>
               </tr>
             </tbody>
           </table>

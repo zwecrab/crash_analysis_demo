@@ -6,7 +6,7 @@ import { api, activeBbox, fetchAccidents, fetchAnalytics, fetchRouteMatrix } fro
 import { initCharts, updateCharts, updateRiskForCurrentDay, updateRouteMatrixUI } from './modules/charts.js';
 import { map, createCircle, onCircleChange, drawRoadGeometry, clearRoadGeometry, setActiveSection, enterRoadMode, exitRoadMode, toggleMapStyle, drawHoverRoute, clearHoverRoute } from './modules/map.js';
 import { clearAccMarkers, renderCollisionList, clearFocus, renderAccidents } from './modules/collisions.js';
-import { fetchHeatmapData, enterHeatmapMode, exitHeatmapMode } from './modules/heatmap.js';
+import { fetchHeatmapData, toggleHeatmapOverlay } from './modules/heatmap.js';
 import { play, pause, stop, setTime, loadTrajectoryWindow, renderFrame, showToast } from './modules/playback.js';
 import { initRoutesPanel, setActiveRoute, clearActiveRoute, refreshRouteTrips } from './modules/routes.js';
 
@@ -59,24 +59,19 @@ async function switchMode(to) {
   const from = S.mode;
 
   // Tear-down current view mode
-  if (from === 'heatmap') await exitHeatmapMode(to);
   if (from === 'road') {
-    if (to !== 'heatmap') {
-      clearRoadGeometry();
-      document.getElementById('section-panel').classList.add('hidden');
-      S.activeSection = null;
-    }
+    clearRoadGeometry();
+    document.getElementById('section-panel').classList.add('hidden');
+    S.activeSection = null;
   }
   if (from === 'full' || from === 'road') {
-    if (to !== 'heatmap') {
-      if (S.circle) {
-        S.circle.remove();
-        S.circle = null;
-      }
-      if (S.mask) {
-        S.mask.remove();
-        S.mask = null;
-      }
+    if (S.circle) {
+      S.circle.remove();
+      S.circle = null;
+    }
+    if (S.mask) {
+      S.mask.remove();
+      S.mask = null;
     }
   }
 
@@ -89,18 +84,10 @@ async function switchMode(to) {
   // Setup new mode
   if (to === 'full') await exitRoadMode();
   else if (to === 'road') await enterRoadMode();
-  else if (to === 'heatmap') await enterHeatmapMode();
-
-  if (to !== 'heatmap') {
-    S.activeRoute = null;
-    document.querySelectorAll('.rm-row').forEach(r => r.classList.remove('active'));
-    clearHoverRoute();
-  }
 
   // Sync button toggles
   document.getElementById('btn-mode-full').classList.toggle('active', to === 'full');
   document.getElementById('btn-mode-road').classList.toggle('active', to === 'road');
-  document.getElementById('btn-mode-heatmap').classList.toggle('active', to === 'heatmap');
 }
 
 function setTimelineInteraction(enabled) {
@@ -333,7 +320,9 @@ initRoutesPanel();
 
 document.getElementById('btn-mode-full').addEventListener('click', () => switchMode('full'));
 document.getElementById('btn-mode-road').addEventListener('click', () => switchMode('road'));
-document.getElementById('btn-mode-heatmap').addEventListener('click', () => switchMode('heatmap'));
+document.getElementById('btn-toggle-heatmap').addEventListener('click', () => {
+  toggleHeatmapOverlay(!S.heatmapEnabled);
+});
 
 document.querySelectorAll('#hm-event-pills .hm-pill').forEach(btn => {
   btn.addEventListener('click', () => {

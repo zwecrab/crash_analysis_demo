@@ -47,6 +47,7 @@ export const S = {
   roadLabels: [],
   roadMask: null,
   activeSection: null,
+  heatmapEnabled: false,
   sectionAnalytics: {},
   sectionDaily: { A: null, B: null, C: null },
   lastSectionRiskDay: { A: null, B: null, C: null },

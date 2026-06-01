@@ -2,10 +2,11 @@
 
 import { S, iso, fmtStamp, evtLabel } from './state.js';
 import { map } from './map.js';
-import { api, fetchRouteTrips } from './api.js';
+import { api, fetchRouteTrips, fetchSectionAnalytics } from './api.js';
 import { drawHoverRoute, clearHoverRoute } from './map.js';
 import { pause, setTime, loadTrajectoryWindow, renderFrame } from './playback.js';
 import { clearFocus } from './collisions.js';
+import { fetchHeatmapData } from './heatmap.js';
 
 // Local storage for routes module state
 export const R = {
@@ -81,6 +82,16 @@ export async function setActiveRoute(routeId) {
 
   // Fetch and render trips
   await refreshRouteTrips();
+
+  // Task 3: Sync heatmap points to this route if heatmap is enabled
+  if (S.heatmapEnabled) {
+    fetchHeatmapData();
+  }
+
+  // Task 1: Refresh section breakdown cards if road view mode is active
+  if (S.mode === 'road') {
+    fetchSectionAnalytics();
+  }
 }
 
 /* ── Clear Active Route ────────────────────────────────── */
@@ -114,6 +125,16 @@ export function clearActiveRoute() {
 
   // Clear matrix highlights
   document.querySelectorAll('.rm-row').forEach(row => row.classList.remove('active'));
+
+  // Task 3: Sync heatmap points by clearing route filter if heatmap is enabled
+  if (S.heatmapEnabled) {
+    fetchHeatmapData();
+  }
+
+  // Task 1: Refresh section breakdown cards if road view mode is active
+  if (S.mode === 'road') {
+    fetchSectionAnalytics();
+  }
 }
 
 /* ── Refresh Trips & Markers ───────────────────────────── */
@@ -183,7 +204,7 @@ function renderRouteTripsList() {
           <div class="trip-body">
             <div class="trip-title">VIN ···${vinTail}</div>
             <div class="trip-meta">
-              ${dateStr} · ${timeStr}<span class="sep">·</span>Max: ${maxSpd}
+              ${dateStr} · ${timeStr} · <b>${trip.origin} ➔ ${trip.destination}</b><span class="sep">·</span>Max: ${maxSpd}
             </div>
             <div class="trip-badge-wrap">
               ${badges.join('')}
@@ -293,7 +314,7 @@ export async function focusTrip(trip) {
     );
     R.focusWaypoints = data.waypoints || [];
     S.focusWaypoints = data.waypoints || []; // sync with global state for animation tracking
-    drawTripFocusedTrack();
+    drawTripFocusedTrack(trip);
     drawRouteEventMarkers(trip);
   } catch (err) {
     console.error('Failed to load focus trip path:', err);
@@ -306,12 +327,44 @@ export async function focusTrip(trip) {
   renderRouteTripsList();
 }
 
-function drawTripFocusedTrack() {
+function drawTripFocusedTrack(trip) {
   clearRouteFocusedTrack();
 
   const wps = R.focusWaypoints;
   if (!wps || !wps.length) return;
-  const latlngs = wps.map(w => [w.la, w.lo]);
+
+  const startTarget = new Date(trip.t_start).getTime();
+  const endTarget = new Date(trip.t_end).getTime();
+
+  let startWP = wps[0];
+  let endWP = wps[wps.length - 1];
+  let minStartDiff = Infinity;
+  let minEndDiff = Infinity;
+
+  wps.forEach(w => {
+    const t = new Date(w.t).getTime();
+    const startDiff = Math.abs(t - startTarget);
+    const endDiff = Math.abs(t - endTarget);
+    if (startDiff < minStartDiff) {
+      minStartDiff = startDiff;
+      startWP = w;
+    }
+    if (endDiff < minEndDiff) {
+      minEndDiff = endDiff;
+      endWP = w;
+    }
+  });
+
+  // Filter waypoints strictly between gate crossings for highlighting
+  let activeWps = wps.filter(w => {
+    const t = new Date(w.t).getTime();
+    return t >= startTarget && t <= endTarget;
+  });
+  if (activeWps.length < 2) {
+    activeWps = [startWP, endWP];
+  }
+
+  const latlngs = activeWps.map(w => [w.la, w.lo]);
 
   // Draw coral trajectory line matching investigations
   R.focusPolyline = L.polyline(latlngs, {
@@ -334,8 +387,8 @@ function drawTripFocusedTrack() {
       zIndexOffset: 2500
     }).addTo(map);
 
-  R.focusMarkers.push(mk(latlngs[0], 'start', 'Trip origin gate'));
-  R.focusMarkers.push(mk(latlngs[latlngs.length - 1], 'end', 'Trip destination gate'));
+  R.focusMarkers.push(mk([startWP.la, startWP.lo], 'start', `Trip origin gate ${trip.origin}`));
+  R.focusMarkers.push(mk([endWP.la, endWP.lo], 'end', `Trip destination gate ${trip.destination}`));
 
   if (latlngs.length > 1) {
     map.fitBounds(R.focusPolyline.getBounds(), { padding: [60, 60], maxZoom: 18, animate: true });
