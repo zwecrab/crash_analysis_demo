@@ -115,7 +115,7 @@ def get_analytics_query(has_time: bool, route: str = None, use_spatial: bool = F
                     c2.timestamp as t_end
                 FROM gate_crossings c1
                 JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
-                WHERE c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
+                WHERE c2.timestamp - c1.timestamp <= INTERVAL '5 minutes'
                   AND (
                     (c1.gate = '{origin1}' AND c2.gate = '{dest1}') OR
                     (c1.gate = '{origin2}' AND c2.gate = '{dest2}')
@@ -322,12 +322,13 @@ def get_route_matrix_query(
             FROM gate_crossings c1
             JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
             WHERE c1.gate != c2.gate
-              -- Only include A-C and B-C routes bidirectionally (exclude A-B transitions)
+              -- Include A-C, B-C and A-B routes bidirectionally
               AND (
                 (c1.gate = 'A' AND c2.gate = 'C') OR (c1.gate = 'C' AND c2.gate = 'A') OR
-                (c1.gate = 'B' AND c2.gate = 'C') OR (c1.gate = 'C' AND c2.gate = 'B')
+                (c1.gate = 'B' AND c2.gate = 'C') OR (c1.gate = 'C' AND c2.gate = 'B') OR
+                (c1.gate = 'A' AND c2.gate = 'B') OR (c1.gate = 'B' AND c2.gate = 'A')
               )
-              AND c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
+              AND c2.timestamp - c1.timestamp <= INTERVAL '5 minutes'
               {hour_filter_trips}
         ),
         events AS (
@@ -349,6 +350,7 @@ def get_route_matrix_query(
             CASE 
                 WHEN (t.origin = 'A' AND t.destination = 'C') OR (t.origin = 'C' AND t.destination = 'A') THEN 'AC'
                 WHEN (t.origin = 'B' AND t.destination = 'C') OR (t.origin = 'C' AND t.destination = 'B') THEN 'BC'
+                WHEN (t.origin = 'A' AND t.destination = 'B') OR (t.origin = 'B' AND t.destination = 'A') THEN 'AB'
             END as route,
             COUNT(DISTINCT t.vin || '_' || CAST(t.t_start AS VARCHAR)) as trips,
             COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN t.vin || '_' || CAST(t.t_start AS VARCHAR) END) as brake,
@@ -371,9 +373,12 @@ def get_route_trips_query(
     if route == "AC":
         origin1, dest1 = "A", "C"
         origin2, dest2 = "C", "A"
-    else: # BC
+    elif route == "BC":
         origin1, dest1 = "B", "C"
         origin2, dest2 = "C", "B"
+    elif route == "AB":
+        origin1, dest1 = "A", "B"
+        origin2, dest2 = "B", "A"
 
     gate_sql = get_gate_sql(use_spatial)
 
@@ -408,7 +413,7 @@ def get_route_trips_query(
                 c2.gate as destination
             FROM gate_crossings c1
             JOIN gate_crossings c2 ON c1.vin = c2.vin AND c1.rn + 1 = c2.rn
-            WHERE c2.timestamp - c1.timestamp <= INTERVAL '60 minutes'
+            WHERE c2.timestamp - c1.timestamp <= INTERVAL '5 minutes'
               AND (
                 (c1.gate = '{origin1}' AND c2.gate = '{dest1}') OR
                 (c1.gate = '{origin2}' AND c2.gate = '{dest2}')

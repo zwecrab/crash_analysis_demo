@@ -243,7 +243,7 @@ export function updateRiskForCurrentDay(force) {
 
 export function updateRouteMatrixUI(matrix) {
   if (!matrix) return;
-  const routes = ['AC', 'BC'];
+  const routes = ['AB', 'AC', 'BC'];
   routes.forEach(r => {
     const data = matrix[r] || { trips: 0, brake: 0, turn: 0, accel: 0 };
     const tripsEl = document.getElementById(`rm-${r}-trips`);

@@ -573,6 +573,7 @@ def get_route_matrix(
 
     # Pre-populate bidirectional rows
     matrix = {
+        "AB": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
         "AC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
         "BC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
     }
@@ -606,8 +607,8 @@ def get_route_trips(
     event_filter: str = Query("all", description="all, 1, 2, 3, normal"),
 ):
     """Fetch vehicle crossings and their events on a specific bidirectional route inside a time window."""
-    if route not in ("AC", "BC"):
-        raise HTTPException(400, "Invalid route. Expected 'AC' or 'BC'")
+    if route not in ("AC", "BC", "AB"):
+        raise HTTPException(400, "Invalid route. Expected 'AC', 'BC', or 'AB'")
 
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")

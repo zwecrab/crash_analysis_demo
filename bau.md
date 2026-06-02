@@ -99,10 +99,11 @@ Recent development cycles refactored the app into a premium, decoupled architect
   * `sql_schemas.py`: Houses clean, parameterized Python query functions, completely abstracting data access from endpoint routing.
 * **Result**: `app.py` is now a pure, lightweight endpoint shell, highly readable and reusable.
 
-### 2. Consolidated Bidirectional Routes (Task 1)
-* **The Change**: Disabled the `A ➔ B` and `B ➔ A` routes which represent bypass highway traffic. Combined `A ➔ C` and `C ➔ A` into a single bidirectional route **`A ↔ C`** (North ↔ West), and `B ➔ C` and `C ➔ B` into **`B ↔ C`** (South ↔ West).
+### 2. Consolidated Bidirectional Routes & 5-Min Transition Interval
+* **The Change**: Configured three bidirectional combined routes: **`A ↔ B`** (North ↔ South), **`A ↔ C`** (North ↔ West), and **`B ↔ C`** (South ↔ West).
+* **Transition Interval**: The transition interval limit for consecutive gate crossings has been reduced from `60 minutes` to `5 minutes` across all SQL schemas (`get_analytics_query`, `get_route_matrix_query`, and `get_route_trips_query`).
 * **Backend Aggregations**: Updated `sql_schemas.py` and `app.py` to aggregate bidirectional transitions and count distinct trip IDs. `/api/route-trips` returns the specific `origin` and `destination` fields for each crossing.
-* **Sidebar Details**: The sidebar trips list displays the actual direction of travel (e.g. **`A ➔ C`** or **`C ➔ A`**) in the trip metadata for complete clarity.
+* **Sidebar Details**: The sidebar trips list displays the actual direction of travel (e.g. **`A ➔ B`**, **`A ➔ C`**, etc.) in the trip metadata for complete clarity.
 
 ### 3. Non-Disruptive Heatmap Overlay (Task 2)
 * **The Change**: Refactored the heatmap from an exclusive screen "view mode" into a **toggleable layer overlay** (`S.heatmapEnabled`). Toggling it ON shows the floating `#heatmap-panel` filter control card, and toggling it OFF hides it.
