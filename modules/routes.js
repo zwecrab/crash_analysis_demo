@@ -13,6 +13,8 @@ export const R = {
   activeRoute: null,
   eventFilter: 'all',
   trips: [],
+  currentPage: 0,
+  pageSize: 10,
   eventMarkers: [],
   focusPolyline: null,
   focusMarkers: [],
@@ -120,8 +122,7 @@ export function clearActiveRoute() {
     listEl.innerHTML = '<div class="routes-empty">Select a route in the matrix to view trips.</div>';
   }
 
-  const countEl = document.getElementById('route-trips-count');
-  if (countEl) countEl.textContent = '0';
+  // No-op (removed countEl)
 
   // Clear matrix highlights
   document.querySelectorAll('.rm-row').forEach(row => row.classList.remove('active'));
@@ -142,7 +143,6 @@ export async function refreshRouteTrips() {
   if (!R.activeRoute) return;
 
   const listEl = document.getElementById('routes-list');
-  const countEl = document.getElementById('route-trips-count');
   if (listEl) {
     listEl.innerHTML = '<div class="routes-empty"><div class="section-spinner"></div>Loading trips…</div>';
   }
@@ -150,8 +150,7 @@ export async function refreshRouteTrips() {
   try {
     const res = await fetchRouteTrips(R.activeRoute, R.eventFilter);
     R.trips = res.trips || [];
-    
-    if (countEl) countEl.textContent = R.trips.length.toLocaleString();
+    R.currentPage = 0; // Reset pagination page
     
     renderRouteTripsList();
   } catch (err) {
@@ -172,8 +171,18 @@ function renderRouteTripsList() {
     return;
   }
 
-  listEl.innerHTML = R.trips
-    .map((trip, idx) => {
+  const totalPages = Math.ceil(R.trips.length / R.pageSize);
+  if (R.currentPage >= totalPages) {
+    R.currentPage = Math.max(0, totalPages - 1);
+  }
+
+  const startIndex = R.currentPage * R.pageSize;
+  const endIndex = Math.min(startIndex + R.pageSize, R.trips.length);
+  const tripsToRender = R.trips.slice(startIndex, endIndex);
+
+  const itemsHtml = tripsToRender
+    .map((trip, localIdx) => {
+      const globalIdx = startIndex + localIdx;
       const vinTail = trip.vin ? trip.vin.slice(-6) : '—';
       const d = new Date(trip.t_start);
       const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
@@ -199,7 +208,7 @@ function renderRouteTripsList() {
       const isFocused = R.focusedVin === trip.vin && R.focusCenterMs === d.getTime();
 
       return `
-        <div class="route-trip-item${isFocused ? ' active' : ''}" data-idx="${idx}">
+        <div class="route-trip-item${isFocused ? ' active' : ''}" data-idx="${globalIdx}">
           <span class="trip-dot ${primaryClass}"></span>
           <div class="trip-body">
             <div class="trip-title">VIN ···${vinTail}</div>
@@ -215,12 +224,45 @@ function renderRouteTripsList() {
     })
     .join('');
 
+  const paginationHtml = `
+    <div class="routes-pagination">
+      <button id="btn-prev-page" class="pag-btn" ${R.currentPage === 0 ? 'disabled' : ''}>Back</button>
+      <span class="pagination-info">Page ${R.currentPage + 1} of ${totalPages}</span>
+      <button id="btn-next-page" class="pag-btn" ${R.currentPage >= totalPages - 1 ? 'disabled' : ''}>Next</button>
+    </div>
+  `;
+
+  listEl.innerHTML = itemsHtml + paginationHtml;
+
   listEl.querySelectorAll('.route-trip-item').forEach(el => {
     el.addEventListener('click', () => {
       const idx = parseInt(el.dataset.idx, 10);
       focusTrip(R.trips[idx]);
     });
   });
+
+  const prevBtn = document.getElementById('btn-prev-page');
+  const nextBtn = document.getElementById('btn-next-page');
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', () => {
+      if (R.currentPage > 0) {
+        R.currentPage--;
+        renderRouteTripsList();
+        listEl.scrollTop = 0;
+      }
+    });
+  }
+
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      if (R.currentPage < totalPages - 1) {
+        R.currentPage++;
+        renderRouteTripsList();
+        listEl.scrollTop = 0;
+      }
+    });
+  }
 }
 
 /* ── Draw Event Markers on Map ────────────────────────── */
