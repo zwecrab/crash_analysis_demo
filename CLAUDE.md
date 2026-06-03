@@ -43,7 +43,7 @@ Toyota Car (L-DCM) → TCAP Device Server (Thailand) → OneDrive → TMC Linux 
 | `gx_phyd`     | Longitudinal G-force (PHYD / normal driving event)   |
 | `gy_acci`     | Lateral G-force at collision (0.1s resolution)       |
 | `gx_acci`     | Longitudinal G-force at collision (0.1s resolution)  |
-| `event_type`  | 1=Harsh Braking, 2=Sudden Accel, 3=Sharp Turn        |
+| `event_type`  | 1=Sudden Accel, 2=Harsh Braking, 3=Sharp Turn        |
 | `collision_type` | 17=Front-Back (Driving). Only type present.       |
 
 > **CRITICAL DATA FINDING:** The actual database uses integer values `1, 2, 3` for `event_type`, NOT the hex codes `0x10, 0x20` from the documentation. Similarly, `collision_type` only contains `17` in this dataset.

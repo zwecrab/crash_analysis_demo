@@ -1,266 +1,354 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>L-DCM Crash Risk Analysis — Dashboard</title>
-  <meta name="description" content="Vehicle telemetry dashboard for L-DCM crash risk blackspot analysis. Before/after countermeasure comparison."/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <meta name="description"
+    content="Vehicle telemetry dashboard for L-DCM crash risk blackspot analysis. Before/after countermeasure comparison." />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/style.css"/>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
 </head>
+
 <body>
-<div id="app">
-  <!-- Loading -->
-  <div id="loading"><div class="spinner"></div><span id="load-msg">Connecting…</span><span id="load-err"></span></div>
+  <div id="app">
+    <!-- Loading -->
+    <div id="loading">
+      <div class="spinner"></div><span id="load-msg">Connecting…</span><span id="load-err"></span>
+    </div>
 
-  <!-- Top bar -->
-  <header id="top-bar">
-    <button class="tb-btn" id="btn-reset" title="Re-centre on the active geometry">⟲ Reset View</button>
-    <div class="tb-group tb-mode-group">
-      <span class="tb-label">View:</span>
-      <button class="tb-btn active" id="btn-mode-full" title="Show the full blackspot circle">Full Map</button>
-      <button class="tb-btn" id="btn-mode-road" title="Focus on Kamphaeng Phet 6 Rd, partitioned into 3 sections">Kamphaeng Phet 6</button>
-    </div>
-    <div class="tb-spacer"></div>
-    <div class="tb-group">
-      <button class="tb-btn" id="btn-toggle-smooth" title="Toggle vehicle trajectory smoothing on the map">Normal Trip</button>
-    </div>
-    <div class="tb-group">
-      <button class="tb-btn" id="btn-toggle-static" title="Hide all accidents and moving vehicles, and lock the timeline">Hide Active Data</button>
-    </div>
-    <div class="tb-group">
-      <button class="tb-btn" id="btn-toggle-heatmap" title="Toggle heatmap analysis layer on the map">⬡ Heatmap</button>
-    </div>
-    <div class="tb-group">
-      <button class="tb-btn" id="btn-map-toggle" title="Toggle between Dark mode and Google Map Normal style">🗺️ Google Map</button>
-    </div>
-  </header>
+    <!-- Top bar -->
+    <header id="top-bar">
+      <button class="tb-btn" id="btn-reset" title="Re-centre on the active geometry">⟲ Reset View</button>
+      <div class="tb-group tb-mode-group">
+        <span class="tb-label">View:</span>
+        <button class="tb-btn active" id="btn-mode-full" title="Show the full blackspot circle">Full Map</button>
+        <button class="tb-btn" id="btn-mode-road"
+          title="Focus on Kamphaeng Phet 6 Rd, partitioned into 3 sections">Kamphaeng Phet 6</button>
+      </div>
+      <div class="tb-spacer"></div>
+      <div class="tb-group">
+        <button class="tb-btn" id="btn-toggle-smooth" title="Toggle vehicle trajectory smoothing on the map">Normal
+          Trip</button>
+      </div>
+      <div class="tb-group">
+        <button class="tb-btn" id="btn-toggle-static"
+          title="Hide all accidents and moving vehicles, and lock the timeline">Hide Active Data</button>
+      </div>
+      <div class="tb-group">
+        <button class="tb-btn" id="btn-toggle-heatmap" title="Toggle heatmap analysis layer on the map">⬡
+          Heatmap</button>
+      </div>
+      <div class="tb-group">
+        <button class="tb-btn" id="btn-map-toggle" title="Toggle between Dark mode and Google Map Normal style">🗺️
+          Google Map</button>
+      </div>
+    </header>
 
-  <!-- Main -->
-  <div id="main">
+    <!-- Main -->
+    <div id="main">
 
-    <!-- Routes Telemetry & Vehicle Tracking Panel -->
-    <aside id="routes-panel" class="collapsed">
-      <div id="routes-header">
-        <span>Route Trips</span>
-        <div id="routes-header-right">
-          <span id="route-trips-count" class="route-count-badge">0</span>
-          <button id="btn-collapse-routes" class="collapse-btn" title="Collapse panel">▶</button>
+      <!-- Routes Telemetry & Vehicle Tracking Panel -->
+      <aside id="routes-panel" class="collapsed">
+        <div id="routes-header">
+          <span>Route Trips</span>
+          <div id="routes-header-right">
+            <span id="route-trips-count" class="route-count-badge">0</span>
+            <button id="btn-collapse-routes" class="collapse-btn" title="Collapse panel">▶</button>
+          </div>
+        </div>
+        <div id="routes-controls" class="hidden">
+          <select id="route-event-filter" title="Filter by trip event type">
+            <option value="all">All Trips</option>
+            <option value="1">Sudden Acceleration</option>
+            <option value="2">Harsh Braking</option>
+            <option value="3">Sharp Turn</option>
+            <option value="normal">Normal Driving</option>
+          </select>
+        </div>
+        <div id="routes-focus-bar" class="routes-focus-bar hidden">
+          <span id="routes-focus-label">Highlighting trip...</span>
+          <button id="btn-clear-route-focus" class="clear-focus-btn" title="Clear track highlight">✕ Clear</button>
+        </div>
+        <div id="routes-list">
+          <div class="routes-empty">Select a route in the matrix to view trips.</div>
+        </div>
+      </aside>
+
+      <div id="map-wrap">
+        <div id="map"></div>
+        <button id="btn-close-section" class="close-section-btn hidden" title="Back to full road view"
+          aria-label="Close section view">
+          <span class="close-icon">✕</span>
+          <span class="close-label">Back to full road</span>
+        </button>
+
+        <!-- Heatmap filter panel (visible only in Heatmap mode) -->
+        <div id="heatmap-panel" class="heatmap-panel hidden" aria-label="Heatmap filters">
+          <div class="hm-header">
+            <span class="hm-title">Heatmap Analysis</span>
+            <span class="hm-subtitle">Kamphaeng Phet 6 · Selected Segment</span>
+          </div>
+
+          <div class="hm-section">
+            <div class="hm-label">Event Type</div>
+            <div class="hm-pills" id="hm-event-pills">
+              <button class="hm-pill active" data-value="0">All Events</button>
+              <button class="hm-pill accel" data-value="1">Acceleration</button>
+              <button class="hm-pill brake" data-value="2">Braking</button>
+              <button class="hm-pill turn" data-value="3">Turning</button>
+            </div>
+          </div>
+
+          <div class="hm-section">
+            <div class="hm-label">Speed Bracket</div>
+            <div class="hm-pills" id="hm-speed-pills">
+              <button class="hm-pill active" data-value="0">All Speeds</button>
+              <button class="hm-pill" data-value="1">0 – 60 km/h</button>
+              <button class="hm-pill" data-value="2">61 – 100 km/h</button>
+              <button class="hm-pill" data-value="3">100 + km/h</button>
+            </div>
+          </div>
+
+          <div class="hm-section">
+            <div class="hm-label hm-hour-label">
+              Hour of Day
+              <span id="hm-hour-display" class="hm-hour-display">All hours</span>
+            </div>
+            <input type="range" id="hm-hour-slider" class="hm-slider" min="0" max="24" value="24" step="1"
+              title="0–23 = specific Bangkok hour; 24 = all hours" />
+            <div class="hm-hour-ticks">
+              <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>All</span>
+            </div>
+          </div>
+
+          <div class="hm-footer">
+            <span id="hm-point-count" class="hm-count">— events</span>
+            <span id="hm-loading" class="hm-loading hidden">Loading…</span>
+          </div>
+        </div>
+        <div id="legend">
+          <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20">
+              <polygon points="10,2 17,17 10,13 3,17" fill="#3b82f6" />
+            </svg> Normal</div>
+          <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20">
+              <polygon points="10,2 17,17 10,13 3,17" fill="#0d9488" />
+            </svg> Accelerating</div>
+          <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20">
+              <polygon points="10,2 17,17 10,13 3,17" fill="#f59e0b" />
+            </svg> Braking</div>
+          <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20">
+              <polygon points="10,2 17,17 10,13 3,17" fill="#8b5cf6" />
+            </svg> Sharp Turn</div>
+          <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20">
+              <polygon points="10,2 17,17 10,13 3,17" fill="#dc2626" />
+            </svg> Collision</div>
+          <div class="leg-item" style="margin-top:4px;border-top:1px solid rgba(255,255,255,.15);padding-top:4px">
+            <span class="leg-dot" style="background:#f59e0b"></span> Low Impact
+          </div>
+          <div class="leg-item"><span class="leg-dot" style="background:#f97316"></span> Medium Impact</div>
+          <div class="leg-item"><span class="leg-dot" style="background:#dc2626"></span> High Impact</div>
+        </div>
+        <div id="status-panel">
+          <div class="sp-title">Vehicles in View: <span id="sp-total">0</span></div>
+          <div class="sp-row"><span><span class="sp-dot" style="background:#3b82f6"></span>Normal</span><span
+              class="sp-count" id="sp-normal">0</span></div>
+          <div class="sp-row"><span><span class="sp-dot" style="background:#0d9488"></span>Accelerating</span><span
+              class="sp-count" id="sp-accel">0</span></div>
+          <div class="sp-row"><span><span class="sp-dot" style="background:#f59e0b"></span>Braking</span><span
+              class="sp-count" id="sp-brake">0</span></div>
+          <div class="sp-row"><span><span class="sp-dot" style="background:#8b5cf6"></span>Sharp Turn</span><span
+              class="sp-count" id="sp-turn">0</span></div>
+          <div class="sp-row"><span><span class="sp-dot" style="background:#dc2626"></span>Collision</span><span
+              class="sp-count" id="sp-collision">0</span></div>
         </div>
       </div>
-      <div id="routes-controls" class="hidden">
-        <select id="route-event-filter" title="Filter by trip event type">
-          <option value="all">All Trips</option>
-          <option value="1">Sudden Acceleration</option>
-          <option value="2">Harsh Braking</option>
-          <option value="3">Sharp Turn</option>
-          <option value="normal">Normal Driving</option>
+
+      <aside id="analytics">
+        <div id="analytics-header">
+          <span>Analytics</span>
+          <select id="analytics-tab-select" class="analytics-tab-select" title="Switch analysis view">
+            <option value="event">Event Analysis</option>
+            <option value="time">Time Analysis</option>
+          </select>
+        </div>
+
+        <!-- Route Analysis Matrix — O-D trips metric, shown first -->
+        <div class="card" id="card-route-matrix">
+          <div class="card-title">Route Analysis Matrix</div>
+          <div class="rm-container">
+            <table class="rm-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left">Route</th>
+                  <th>Trips</th>
+                  <th>Brake</th>
+                  <th>Turn</th>
+                  <th>Accel</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="rm-row" id="rm-row-12" data-route="12">
+                  <td class="rm-route-name">1 ➔ 2 <span class="rm-route-desc">Section A NE</span></td>
+                  <td id="rm-12-trips" class="rm-num">—</td>
+                  <td id="rm-12-brake" class="rm-num">—</td>
+                  <td id="rm-12-turn" class="rm-num">—</td>
+                  <td id="rm-12-accel" class="rm-num">—</td>
+                </tr>
+                <tr class="rm-row" id="rm-row-23" data-route="23">
+                  <td class="rm-route-name">2 ➔ 3 <span class="rm-route-desc">Section B NE</span></td>
+                  <td id="rm-23-trips" class="rm-num">—</td>
+                  <td id="rm-23-brake" class="rm-num">—</td>
+                  <td id="rm-23-turn" class="rm-num">—</td>
+                  <td id="rm-23-accel" class="rm-num">—</td>
+                </tr>
+                <tr class="rm-row" id="rm-row-34" data-route="34">
+                  <td class="rm-route-name">3 ➔ 4 <span class="rm-route-desc">Section C NE</span></td>
+                  <td id="rm-34-trips" class="rm-num">—</td>
+                  <td id="rm-34-brake" class="rm-num">—</td>
+                  <td id="rm-34-turn" class="rm-num">—</td>
+                  <td id="rm-34-accel" class="rm-num">—</td>
+                </tr>
+                <tr class="rm-row" id="rm-row-43" data-route="43">
+                  <td class="rm-route-name">4 ➔ 3 <span class="rm-route-desc">Section C SW</span></td>
+                  <td id="rm-43-trips" class="rm-num">—</td>
+                  <td id="rm-43-brake" class="rm-num">—</td>
+                  <td id="rm-43-turn" class="rm-num">—</td>
+                  <td id="rm-43-accel" class="rm-num">—</td>
+                </tr>
+                <tr class="rm-row" id="rm-row-32" data-route="32">
+                  <td class="rm-route-name">3 ➔ 2 <span class="rm-route-desc">Section B SW</span></td>
+                  <td id="rm-32-trips" class="rm-num">—</td>
+                  <td id="rm-32-brake" class="rm-num">—</td>
+                  <td id="rm-32-turn" class="rm-num">—</td>
+                  <td id="rm-32-accel" class="rm-num">—</td>
+                </tr>
+                <tr class="rm-row" id="rm-row-21" data-route="21">
+                  <td class="rm-route-name">2 ➔ 1 <span class="rm-route-desc">Section A SW</span></td>
+                  <td id="rm-21-trips" class="rm-num">—</td>
+                  <td id="rm-21-brake" class="rm-num">—</td>
+                  <td id="rm-21-turn" class="rm-num">—</td>
+                  <td id="rm-21-accel" class="rm-num">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Route Time Analysis Matrix — min/max/avg seconds to traverse each route -->
+        <div class="card hidden" id="card-route-time-matrix">
+          <div class="card-title">Route Time Analysis <span class="rm-route-desc">(seconds to pass)</span></div>
+          <div class="rm-container">
+            <table class="rm-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left">Route</th>
+                  <th>Trips</th>
+                  <th>Min</th>
+                  <th>Max</th>
+                  <th>Avg</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="rm-row" id="rt-row-12"><td class="rm-route-name">1 ➔ 2 <span class="rm-route-desc">Section A NE</span></td><td id="rt-12-trips" class="rm-num">—</td><td id="rt-12-min" class="rm-num">—</td><td id="rt-12-max" class="rm-num">—</td><td id="rt-12-avg" class="rm-num">—</td></tr>
+                <tr class="rm-row" id="rt-row-23"><td class="rm-route-name">2 ➔ 3 <span class="rm-route-desc">Section B NE</span></td><td id="rt-23-trips" class="rm-num">—</td><td id="rt-23-min" class="rm-num">—</td><td id="rt-23-max" class="rm-num">—</td><td id="rt-23-avg" class="rm-num">—</td></tr>
+                <tr class="rm-row" id="rt-row-34"><td class="rm-route-name">3 ➔ 4 <span class="rm-route-desc">Section C NE</span></td><td id="rt-34-trips" class="rm-num">—</td><td id="rt-34-min" class="rm-num">—</td><td id="rt-34-max" class="rm-num">—</td><td id="rt-34-avg" class="rm-num">—</td></tr>
+                <tr class="rm-row" id="rt-row-43"><td class="rm-route-name">4 ➔ 3 <span class="rm-route-desc">Section C SW</span></td><td id="rt-43-trips" class="rm-num">—</td><td id="rt-43-min" class="rm-num">—</td><td id="rt-43-max" class="rm-num">—</td><td id="rt-43-avg" class="rm-num">—</td></tr>
+                <tr class="rm-row" id="rt-row-32"><td class="rm-route-name">3 ➔ 2 <span class="rm-route-desc">Section B SW</span></td><td id="rt-32-trips" class="rm-num">—</td><td id="rt-32-min" class="rm-num">—</td><td id="rt-32-max" class="rm-num">—</td><td id="rt-32-avg" class="rm-num">—</td></tr>
+                <tr class="rm-row" id="rt-row-21"><td class="rm-route-name">2 ➔ 1 <span class="rm-route-desc">Section A SW</span></td><td id="rt-21-trips" class="rm-num">—</td><td id="rt-21-min" class="rm-num">—</td><td id="rt-21-max" class="rm-num">—</td><td id="rt-21-avg" class="rm-num">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Event breakdown -->
+        <div class="card">
+          <div class="card-title">Event Type Breakdown</div>
+          <div class="chart-wrap" style="height:105px"><canvas id="chart-events"></canvas></div>
+        </div>
+
+        <!-- Crash frequency -->
+        <div class="card">
+          <div class="card-title">Crash Frequency Over Time</div>
+          <div class="chart-wrap" style="height:75px"><canvas id="chart-freq"></canvas></div>
+        </div>
+
+        <!-- Before vs After -->
+        <div class="card" id="card-ba">
+          <div class="card-title">Before vs After Countermeasure</div>
+          <div class="ba-row" id="ba-row" style="display:none">
+            <div class="ba-col">
+              <div class="ba-col-title">Crashes</div>
+              <div class="chart-wrap" style="height:90px"><canvas id="chart-ba-events"></canvas></div>
+            </div>
+            <div class="ba-col">
+              <div class="ba-col-title">Events</div>
+              <div class="chart-wrap" style="height:90px"><canvas id="chart-ba-risk"></canvas></div>
+            </div>
+          </div>
+          <div id="ba-placeholder" class="placeholder">Set countermeasure date to compare</div>
+          <div class="cm-row">
+            <span class="cm-label">Date:</span>
+            <input type="date" id="cm-date" class="cm-input" />
+            <button id="cm-apply" class="cm-btn">Apply</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Per-section breakdown (Road Focus mode only) -->
+    <section id="section-panel" class="hidden" aria-label="Per-section analytics for Kamphaeng Phet 6 Rd">
+      <div class="section-panel-header">
+        <span class="sp-title-text">Kamphaeng Phet 6 · Per-Section Breakdown</span>
+        <span class="sp-hint">Click a card to focus that section on the map</span>
+      </div>
+      <div class="section-grid" id="section-grid">
+        <!-- Section tiles injected by dashboard.js -->
+      </div>
+    </section>
+
+    <!-- Bottom bar -->
+    <footer id="bottom-bar">
+      <div class="tl-row">
+        <span class="tl-date" id="tl-start">—</span>
+        <input type="range" id="timeline" min="0" max="1000" value="0" step="1" />
+        <span class="tl-date right" id="tl-end">—</span>
+      </div>
+      <div class="ctrl-row">
+        <button class="ctrl-btn" id="btn-pause" title="Pause">&#9646;&#9646;</button>
+        <button class="ctrl-btn active" id="btn-play" title="Play">&#9654;</button>
+        <button class="ctrl-btn" id="btn-stop" title="Stop">&#9632;</button>
+        <div class="ctrl-div"></div>
+        <button class="ctrl-btn" id="btn-prev" title="Step back">&#9665;</button>
+        <button class="ctrl-btn" id="btn-next" title="Step forward">&#9655;</button>
+        <div class="ctrl-div"></div>
+        <span id="ts-display">—</span>
+        <div class="ctrl-div"></div>
+        <!-- Precision time jump (NEW) -->
+        <input type="datetime-local" id="time-jump-input" class="time-jump-input" step="1" title="Jump to exact time" />
+        <button id="btn-time-jump" class="ctrl-btn time-jump-btn" title="Jump to specified time">Go</button>
+        <div class="ctrl-div"></div>
+        <span class="tb-label" style="color:#94a3b8;font-size:10px">Speed:</span>
+        <select id="speed-select" class="speed-select" title="Playback speed (data time per wall-second)">
+          <option value="1">1 sec/s (real-time)</option>
+          <option value="15">15 sec/s</option>
+          <option value="30">30 sec/s</option>
+          <option value="60" selected>1 min/s</option>
+          <option value="300">5 min/s</option>
+          <option value="600">10 min/s</option>
+          <option value="1800">30 min/s</option>
         </select>
       </div>
-      <div id="routes-focus-bar" class="routes-focus-bar hidden">
-        <span id="routes-focus-label">Highlighting trip...</span>
-        <button id="btn-clear-route-focus" class="clear-focus-btn" title="Clear track highlight">✕ Clear</button>
-      </div>
-      <div id="routes-list">
-        <div class="routes-empty">Select a route in the matrix to view trips.</div>
-      </div>
-    </aside>
-
-    <div id="map-wrap">
-      <div id="map"></div>
-      <button id="btn-close-section" class="close-section-btn hidden" title="Back to full road view" aria-label="Close section view">
-        <span class="close-icon">✕</span>
-        <span class="close-label">Back to full road</span>
-      </button>
-
-      <!-- Heatmap filter panel (visible only in Heatmap mode) -->
-      <div id="heatmap-panel" class="heatmap-panel hidden" aria-label="Heatmap filters">
-        <div class="hm-header">
-          <span class="hm-title">Heatmap Analysis</span>
-          <span class="hm-subtitle">Kamphaeng Phet 6 · Selected Segment</span>
-        </div>
-
-        <div class="hm-section">
-          <div class="hm-label">Event Type</div>
-          <div class="hm-pills" id="hm-event-pills">
-            <button class="hm-pill active" data-value="0">All Events</button>
-            <button class="hm-pill accel"  data-value="1">Acceleration</button>
-            <button class="hm-pill brake"  data-value="2">Braking</button>
-            <button class="hm-pill turn"   data-value="3">Turning</button>
-          </div>
-        </div>
-
-        <div class="hm-section">
-          <div class="hm-label">Speed Bracket</div>
-          <div class="hm-pills" id="hm-speed-pills">
-            <button class="hm-pill active" data-value="0">All Speeds</button>
-            <button class="hm-pill"        data-value="1">0 – 60 km/h</button>
-            <button class="hm-pill"        data-value="2">61 – 100 km/h</button>
-            <button class="hm-pill"        data-value="3">100 + km/h</button>
-          </div>
-        </div>
-
-        <div class="hm-section">
-          <div class="hm-label hm-hour-label">
-            Hour of Day
-            <span id="hm-hour-display" class="hm-hour-display">All hours</span>
-          </div>
-          <input type="range" id="hm-hour-slider" class="hm-slider"
-                 min="0" max="24" value="24" step="1"
-                 title="0–23 = specific Bangkok hour; 24 = all hours"/>
-          <div class="hm-hour-ticks">
-            <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>All</span>
-          </div>
-        </div>
-
-        <div class="hm-footer">
-          <span id="hm-point-count" class="hm-count">— events</span>
-          <span id="hm-loading" class="hm-loading hidden">Loading…</span>
-        </div>
-      </div>
-      <div id="legend">
-        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#3b82f6"/></svg> Normal</div>
-        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#0d9488"/></svg> Accelerating</div>
-        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#f59e0b"/></svg> Braking</div>
-        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#8b5cf6"/></svg> Sharp Turn</div>
-        <div class="leg-item"><svg class="leg-arrow" viewBox="0 0 20 20"><polygon points="10,2 17,17 10,13 3,17" fill="#dc2626"/></svg> Collision</div>
-        <div class="leg-item" style="margin-top:4px;border-top:1px solid rgba(255,255,255,.15);padding-top:4px">
-          <span class="leg-dot" style="background:#f59e0b"></span> Low Impact</div>
-        <div class="leg-item"><span class="leg-dot" style="background:#f97316"></span> Medium Impact</div>
-        <div class="leg-item"><span class="leg-dot" style="background:#dc2626"></span> High Impact</div>
-      </div>
-      <div id="status-panel">
-        <div class="sp-title">Vehicles in View: <span id="sp-total">0</span></div>
-        <div class="sp-row"><span><span class="sp-dot" style="background:#3b82f6"></span>Normal</span><span class="sp-count" id="sp-normal">0</span></div>
-        <div class="sp-row"><span><span class="sp-dot" style="background:#0d9488"></span>Accelerating</span><span class="sp-count" id="sp-accel">0</span></div>
-        <div class="sp-row"><span><span class="sp-dot" style="background:#f59e0b"></span>Braking</span><span class="sp-count" id="sp-brake">0</span></div>
-        <div class="sp-row"><span><span class="sp-dot" style="background:#8b5cf6"></span>Sharp Turn</span><span class="sp-count" id="sp-turn">0</span></div>
-        <div class="sp-row"><span><span class="sp-dot" style="background:#dc2626"></span>Collision</span><span class="sp-count" id="sp-collision">0</span></div>
-      </div>
-    </div>
-
-    <aside id="analytics">
-      <div id="analytics-header">Analytics</div>
-
-      <!-- Route Analysis Matrix — O-D trips metric, shown first -->
-      <div class="card" id="card-route-matrix">
-        <div class="card-title">Route Analysis Matrix</div>
-        <div class="rm-container">
-          <table class="rm-table">
-            <thead>
-              <tr>
-                <th style="text-align:left">Route</th>
-                <th>Trips</th>
-                <th>Brake</th>
-                <th>Turn</th>
-                <th>Accel</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="rm-row" id="rm-row-AB" data-route="AB">
-                <td class="rm-route-name">A ↔ B <span class="rm-route-desc">North ↔ South</span></td>
-                <td id="rm-AB-trips" class="rm-num">—</td>
-                <td id="rm-AB-brake" class="rm-num">—</td>
-                <td id="rm-AB-turn" class="rm-num">—</td>
-                <td id="rm-AB-accel" class="rm-num">—</td>
-              </tr>
-              <tr class="rm-row" id="rm-row-AC" data-route="AC">
-                <td class="rm-route-name">A ↔ C <span class="rm-route-desc">North ↔ West</span></td>
-                <td id="rm-AC-trips" class="rm-num">—</td>
-                <td id="rm-AC-brake" class="rm-num">—</td>
-                <td id="rm-AC-turn" class="rm-num">—</td>
-                <td id="rm-AC-accel" class="rm-num">—</td>
-              </tr>
-              <tr class="rm-row" id="rm-row-BC" data-route="BC">
-                <td class="rm-route-name">B ↔ C <span class="rm-route-desc">South ↔ West</span></td>
-                <td id="rm-BC-trips" class="rm-num">—</td>
-                <td id="rm-BC-brake" class="rm-num">—</td>
-                <td id="rm-BC-turn" class="rm-num">—</td>
-                <td id="rm-BC-accel" class="rm-num">—</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Event breakdown -->
-      <div class="card">
-        <div class="card-title">Event Type Breakdown</div>
-        <div class="chart-wrap" style="height:105px"><canvas id="chart-events"></canvas></div>
-      </div>
-
-      <!-- Crash frequency -->
-      <div class="card">
-        <div class="card-title">Crash Frequency Over Time</div>
-        <div class="chart-wrap" style="height:75px"><canvas id="chart-freq"></canvas></div>
-      </div>
-
-      <!-- Before vs After -->
-      <div class="card" id="card-ba">
-        <div class="card-title">Before vs After Countermeasure</div>
-        <div class="ba-row" id="ba-row" style="display:none">
-          <div class="ba-col"><div class="ba-col-title">Crashes</div><div class="chart-wrap" style="height:90px"><canvas id="chart-ba-events"></canvas></div></div>
-          <div class="ba-col"><div class="ba-col-title">Events</div><div class="chart-wrap" style="height:90px"><canvas id="chart-ba-risk"></canvas></div></div>
-        </div>
-        <div id="ba-placeholder" class="placeholder">Set countermeasure date to compare</div>
-        <div class="cm-row">
-          <span class="cm-label">Date:</span>
-          <input type="date" id="cm-date" class="cm-input"/>
-          <button id="cm-apply" class="cm-btn">Apply</button>
-        </div>
-      </div>
-    </aside>
+    </footer>
   </div>
-
-  <!-- Per-section breakdown (Road Focus mode only) -->
-  <section id="section-panel" class="hidden" aria-label="Per-section analytics for Kamphaeng Phet 6 Rd">
-    <div class="section-panel-header">
-      <span class="sp-title-text">Kamphaeng Phet 6 · Per-Section Breakdown</span>
-      <span class="sp-hint">Click a card to focus that section on the map</span>
-    </div>
-    <div class="section-grid" id="section-grid">
-      <!-- Section tiles injected by dashboard.js -->
-    </div>
-  </section>
-
-  <!-- Bottom bar -->
-  <footer id="bottom-bar">
-    <div class="tl-row">
-      <span class="tl-date" id="tl-start">—</span>
-      <input type="range" id="timeline" min="0" max="1000" value="0" step="1"/>
-      <span class="tl-date right" id="tl-end">—</span>
-    </div>
-    <div class="ctrl-row">
-      <button class="ctrl-btn" id="btn-pause" title="Pause">&#9646;&#9646;</button>
-      <button class="ctrl-btn active" id="btn-play" title="Play">&#9654;</button>
-      <button class="ctrl-btn" id="btn-stop" title="Stop">&#9632;</button>
-      <div class="ctrl-div"></div>
-      <button class="ctrl-btn" id="btn-prev" title="Step back">&#9665;</button>
-      <button class="ctrl-btn" id="btn-next" title="Step forward">&#9655;</button>
-      <div class="ctrl-div"></div>
-      <span id="ts-display">—</span>
-      <div class="ctrl-div"></div>
-      <!-- Precision time jump (NEW) -->
-      <input type="datetime-local" id="time-jump-input" class="time-jump-input" step="1" title="Jump to exact time"/>
-      <button id="btn-time-jump" class="ctrl-btn time-jump-btn" title="Jump to specified time">Go</button>
-      <div class="ctrl-div"></div>
-      <span class="tb-label" style="color:#94a3b8;font-size:10px">Speed:</span>
-      <select id="speed-select" class="speed-select" title="Playback speed (data time per wall-second)">
-        <option value="1">1 sec/s (real-time)</option>
-        <option value="15">15 sec/s</option>
-        <option value="30">30 sec/s</option>
-        <option value="60" selected>1 min/s</option>
-        <option value="300">5 min/s</option>
-        <option value="600">10 min/s</option>
-        <option value="1800">30 min/s</option>
-      </select>
-    </div>
-  </footer>
-</div>
-<script type="module" src="/dashboard.js?v=20260520"></script>
+  <script type="module" src="/dashboard.js?v=20260520"></script>
 </body>
+
 </html>

@@ -348,7 +348,7 @@ def get_analytics(
     
     # Task 1: Param order varies depending on if query contains raw_gates transitions CTE
     if route:
-        params = tp + bp
+        params = (tp + tp + tp + bp) if tp else bp
     else:
         params = bp + tp
 
@@ -507,8 +507,8 @@ def get_heatmap(
         raise HTTPException(500, f"Database heatmap query failed: {e}")
     cur.close(); conn.close()
 
-    # Apply precise road polygon containment in python fallback if spatial is off and no route filter is specified
-    if not _SPATIAL_AVAILABLE and not route and coordinates.ROAD_POLYGONS:
+    # Apply precise road polygon containment in python fallback if spatial is off
+    if not _SPATIAL_AVAILABLE and coordinates.ROAD_POLYGONS:
         filtered_points = []
         for r in rows:
             lat, lon = r[0], r[1]
@@ -560,7 +560,7 @@ def get_route_matrix(
     cur.execute("SET statement_timeout = '20000'")
 
     query = sql_schemas.get_route_matrix_query(speed_bracket, hour, bool(t_start and t_end), _SPATIAL_AVAILABLE)
-    params = (t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
+    params = (t_start, t_end, t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
 
     try:
         cur.execute(query, params)
@@ -571,11 +571,14 @@ def get_route_matrix(
 
     cur.close(); conn.close()
 
-    # Pre-populate bidirectional rows
+    # Pre-populate directional rows
     matrix = {
-        "AB": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-        "AC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-        "BC": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "12": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "23": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "34": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "43": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "32": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
+      "21": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
     }
 
     for route, trips, brake, turn, accel in rows:
@@ -599,23 +602,59 @@ def get_route_matrix(
     }
 
 
+@app.get("/api/route-time-matrix")
+def get_route_time_matrix(
+    t_start: Optional[str] = Query(None),
+    t_end:   Optional[str] = Query(None),
+):
+    """Time Analysis matrix: per route, min / max / average seconds to traverse the route
+    (time between the origin-gate and destination-gate crossings)."""
+    conn = _conn(); cur = conn.cursor()
+    cur.execute("SET statement_timeout = '20000'")
+
+    query = sql_schemas.get_route_time_matrix_query(bool(t_start and t_end), _SPATIAL_AVAILABLE)
+    params = (t_start, t_end) if (t_start and t_end) else ()
+
+    try:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    except Exception as e:
+        cur.close(); conn.close()
+        raise HTTPException(500, f"Database query failed: {e}")
+    cur.close(); conn.close()
+
+    matrix = {r: {"trips": 0, "min_s": None, "max_s": None, "avg_s": None}
+              for r in ("12", "23", "34", "43", "32", "21")}
+    for route, trips, min_s, max_s, avg_s in rows:
+        if route in matrix:
+            matrix[route] = {
+                "trips": int(trips),
+                "min_s": float(min_s) if min_s is not None else None,
+                "max_s": float(max_s) if max_s is not None else None,
+                "avg_s": round(float(avg_s), 1) if avg_s is not None else None,
+            }
+
+    return {"matrix": matrix, "filter": {"t_start": t_start, "t_end": t_end}}
+
+
 @app.get("/api/route-trips")
 def get_route_trips(
-    route: str = Query(..., description="Route name, e.g. AC, BC"),
+    route: str = Query(..., description="Route name, e.g. 12, 23"),
     t_start: str = Query(..., description="ISO start timestamp"),
     t_end: str = Query(..., description="ISO end timestamp"),
     event_filter: str = Query("all", description="all, 1, 2, 3, normal"),
+    limit: int = Query(10, ge=1, le=500, description="Max trips to return per load"),
 ):
-    """Fetch vehicle crossings and their events on a specific bidirectional route inside a time window."""
-    if route not in ("AC", "BC", "AB"):
-        raise HTTPException(400, "Invalid route. Expected 'AC', 'BC', or 'AB'")
+    """Fetch vehicle crossings and their events on a specific adjacent directional route inside a time window."""
+    if route not in ("12", "23", "34", "43", "32", "21"):
+        raise HTTPException(400, "Invalid route. Expected '12', '23', '34', '43', '32', or '21'")
 
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
-    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE)
+    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE, limit)
 
     try:
-        cur.execute(query, (t_start, t_end))
+        cur.execute(query, (t_start, t_end, t_start, t_end, t_start, t_end))
         rows = cur.fetchall()
     except Exception as e:
         cur.close(); conn.close()

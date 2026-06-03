@@ -243,7 +243,7 @@ export function updateRiskForCurrentDay(force) {
 
 export function updateRouteMatrixUI(matrix) {
   if (!matrix) return;
-  const routes = ['AB', 'AC', 'BC'];
+  const routes = ['12', '23', '34', '43', '32', '21'];
   routes.forEach(r => {
     const data = matrix[r] || { trips: 0, brake: 0, turn: 0, accel: 0 };
     const tripsEl = document.getElementById(`rm-${r}-trips`);
@@ -255,5 +255,30 @@ export function updateRouteMatrixUI(matrix) {
     if (brakeEl) brakeEl.textContent = data.brake.toLocaleString();
     if (turnEl) turnEl.textContent = data.turn.toLocaleString();
     if (accelEl) accelEl.textContent = data.accel.toLocaleString();
+  });
+}
+
+// Format a duration in seconds as a compact human string (e.g. 6s, 1m 12s, 2h 3m).
+function fmtDuration(sec) {
+  if (sec == null) return '—';
+  sec = Math.round(sec);
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+}
+
+export function updateRouteTimeMatrixUI(matrix) {
+  if (!matrix) return;
+  const routes = ['12', '23', '34', '43', '32', '21'];
+  routes.forEach(r => {
+    const d = matrix[r] || { trips: 0, min_s: null, max_s: null, avg_s: null };
+    const set = (suffix, val) => {
+      const el = document.getElementById(`rt-${r}-${suffix}`);
+      if (el) el.textContent = val;
+    };
+    set('trips', (d.trips || 0).toLocaleString());
+    set('min', fmtDuration(d.min_s));
+    set('max', fmtDuration(d.max_s));
+    set('avg', fmtDuration(d.avg_s));
   });
 }

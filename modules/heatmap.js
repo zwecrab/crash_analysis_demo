@@ -6,7 +6,7 @@ import { map } from './map.js';
 
 /* ── Heatmap Corridor Boundary Calculation ────────────────── */
 export const HEATMAP_ZONE = (() => {
-  const S0 = [13.8390065, 100.556055], E0 = [13.8412935, 100.557258];
+  const S0 = [13.83897655, 100.5561489], E0 = [13.8412479, 100.5573606];
   const mLat = 111000, mLon = 111000 * Math.cos((13.8396 * Math.PI) / 180);
   const dx = (E0[0] - S0[0]) * mLat, dy = (E0[1] - S0[1]) * mLon;
   const len = Math.sqrt(dx * dx + dy * dy);

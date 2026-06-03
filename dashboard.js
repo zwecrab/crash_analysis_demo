@@ -2,8 +2,8 @@
 
 /* ── Imports ────────────────────────────────────────────── */
 import { S, iso, fmtDate, fmtStamp, getDist } from './modules/state.js';
-import { api, activeBbox, fetchAccidents, fetchAnalytics, fetchRouteMatrix } from './modules/api.js';
-import { initCharts, updateCharts, updateRiskForCurrentDay, updateRouteMatrixUI } from './modules/charts.js';
+import { api, activeBbox, fetchAccidents, fetchAnalytics, fetchRouteMatrix, fetchRouteTimeMatrix } from './modules/api.js';
+import { initCharts, updateCharts, updateRiskForCurrentDay, updateRouteMatrixUI, updateRouteTimeMatrixUI } from './modules/charts.js';
 import { map, createCircle, onCircleChange, drawRoadGeometry, clearRoadGeometry, setActiveSection, enterRoadMode, exitRoadMode, toggleMapStyle, drawHoverRoute, clearHoverRoute } from './modules/map.js';
 import { clearAccMarkers, renderCollisionList, clearFocus, renderAccidents } from './modules/collisions.js';
 import { fetchHeatmapData, toggleHeatmapOverlay } from './modules/heatmap.js';
@@ -401,6 +401,27 @@ document.querySelectorAll('.rm-row').forEach(row => {
     }
   });
 });
+
+// Analytics view switcher: Event Analysis (route matrix) <-> Time Analysis (traversal times)
+const analyticsTabSelect = document.getElementById('analytics-tab-select');
+if (analyticsTabSelect) {
+  analyticsTabSelect.addEventListener('change', async function () {
+    const isTime = this.value === 'time';
+    const evCard = document.getElementById('card-route-matrix');
+    const tmCard = document.getElementById('card-route-time-matrix');
+    if (evCard) evCard.classList.toggle('hidden', isTime);
+    if (tmCard) tmCard.classList.toggle('hidden', !isTime);
+
+    if (isTime) {
+      try {
+        const res = await fetchRouteTimeMatrix();
+        updateRouteTimeMatrixUI(res.matrix);
+      } catch (err) {
+        console.error('Failed to load route time matrix:', err);
+      }
+    }
+  });
+}
 
 /* ── Launch Dashboard ───────────────────────────────────── */
 init();

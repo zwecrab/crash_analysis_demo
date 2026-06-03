@@ -388,7 +388,20 @@ html,body{
   position:sticky;top:0;z-index:2;
   color:var(--ink);
   letter-spacing:.002em;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
 }
+.analytics-tab-select{
+  font-family:var(--font-sans);
+  font-size:12px;font-weight:500;
+  color:var(--ink);
+  background:var(--bg-paper);
+  border:1px solid var(--border-paper-mid);
+  border-radius:6px;
+  padding:4px 8px;
+  cursor:pointer;
+}
+.analytics-tab-select:hover{border-color:var(--ink-dim)}
+.card.hidden{display:none}
 .card{
   background:var(--bg-paper-hi);
   border-bottom:1px solid var(--border-paper);

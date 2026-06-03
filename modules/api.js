@@ -107,6 +107,14 @@ export async function fetchRouteMatrix() {
   return api('/api/route-matrix?' + p);
 }
 
+export async function fetchRouteTimeMatrix() {
+  const p = new URLSearchParams({
+    t_start: iso(S.tStartMs),
+    t_end: iso(S.tEndMs)
+  });
+  return api('/api/route-time-matrix?' + p);
+}
+
 export async function fetchSectionAnalytics() {
   if (!S.road) return;
   const cm = document.getElementById('cm-date').value;
