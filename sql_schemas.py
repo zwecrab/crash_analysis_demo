@@ -7,7 +7,7 @@ logic and road search limits.
 """
 
 from coordinates import (
-    ROAD_BOUNDS, SRMA_BBOX, CORRIDOR_HALF_M, GATE_PROGRESS, progress_expr,
+    ROAD_BOUNDS, CORRIDOR_HALF_M, GATE_PROGRESS, progress_expr,
     EDGE_GATES,
 )
 
@@ -264,7 +264,9 @@ def get_analytics_query(has_time: bool, route: str = None, use_spatial: bool = F
                   AND s.lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
                 GROUP BY t.vin, t.journey_no
             )
-            SELECT s.timestamp, s.lat::float8, s.lon::float8, s.event_type, s.collision_type
+            -- DISTINCT so an event that falls inside two overlapping legs of the same
+            -- vehicle is counted once (one physical event = one row).
+            SELECT DISTINCT s.timestamp, s.lat::float8, s.lon::float8, s.event_type, s.collision_type
             FROM sensor s
             JOIN journey_bounds t ON s.vin = t.vin
               {time_bound_s_sql}
@@ -393,21 +395,41 @@ def get_heatmap_query(
         """
     return query
 
+def _section_case_sql(use_spatial: bool, lat: str = "lat", lon: str = "lon") -> str:
+    """SQL CASE expression classifying a point into its road section id ('A'/'B'/'C').
+    Uses precise polygon containment when spatial is available (matches the per-section
+    breakdown card's point_in_polygon test); falls back to bounding boxes otherwise."""
+    from coordinates import ROAD_SECTIONS, polygon_to_wkt
+    if use_spatial:
+        whens = [
+            f"WHEN ST_Within(ST_Point({lon}, {lat}), ST_GeomFromText('{polygon_to_wkt(s['polygon'])}')) THEN '{s['id']}'"
+            for s in ROAD_SECTIONS
+        ]
+    else:
+        whens = [
+            f"WHEN {lat} BETWEEN {s['lat_min']} AND {s['lat_max']} AND {lon} BETWEEN {s['lon_min']} AND {s['lon_max']} THEN '{s['id']}'"
+            for s in ROAD_SECTIONS
+        ]
+    return "CASE " + " ".join(whens) + " ELSE NULL END"
+
+
 def get_route_matrix_query(
     speed_bracket: int,
     hour: int,
     has_time: bool,
     use_spatial: bool = False
 ) -> str:
-    """Return parameterized SQL query for Origin-Destination Route Analysis Matrix.
-    Task 1: Aggregates AC & CA under 'AC' (A ↔ C) and BC & CB under 'BC' (B ↔ C), ignoring AB/BA.
+    """Return parameterized SQL query for the Origin-Destination Route Analysis Matrix.
+
+    BRAKE/TURN/ACCEL are EVENT counts within each route's OWN section (12/21→A, 23/32→B,
+    34/43→C), scoped to the strict gate-to-gate leg window — so they match the per-section
+    breakdown card exactly. TRIPS remains the distinct-journey count for the route.
     """
     time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
-    time_bound_s_sql = "AND s.timestamp BETWEEN CAST(%s AS TIMESTAMP) - INTERVAL '5 minutes' AND CAST(%s AS TIMESTAMP) + INTERVAL '5 minutes'" if has_time else ""
 
     if 0 <= hour <= 23:
         hour_filter_events = f"AND CAST(EXTRACT(HOUR FROM timestamp + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-        hour_filter_trips = f"AND CAST(EXTRACT(HOUR FROM journey_start + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
+        hour_filter_trips = f"AND CAST(EXTRACT(HOUR FROM t.t_start + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
     else:
         hour_filter_events = ""
         hour_filter_trips = ""
@@ -424,58 +446,45 @@ def get_route_matrix_query(
     cte_sql = _get_sessionized_journeys_sql(None, use_spatial)
     cte_sql = cte_sql.replace("-- time_placeholder --", time_sql)
 
-    if use_spatial:
-        from coordinates import SRMA_POLYGON, polygon_to_wkt
-        wkt = polygon_to_wkt(SRMA_POLYGON)
-        spatial_sql = f"AND ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt}'))"
-    else:
-        spatial_sql = ""
+    section_case = _section_case_sql(use_spatial)
+
+    # Identity of one physical event (timestamp + location) — dedupes an event that falls
+    # inside two overlapping legs of the same vehicle, matching the card's DISTINCT rows.
+    _EVENT_KEY = "CAST(e.timestamp AS VARCHAR) || '|' || CAST(e.lat AS VARCHAR) || '|' || CAST(e.lon AS VARCHAR)"
 
     query = f"""
         WITH {cte_sql},
-        journey_bounds AS (
-            SELECT 
-                t.vin,
-                t.journey_no,
-                t.route,
-                MIN(t.t_start) as t_start,
-                MAX(t.t_end) as t_end,
-                MIN(s.timestamp) as journey_start,
-                MAX(s.timestamp) as journey_end
-            FROM journey_segments t
-            JOIN sensor s ON t.vin = s.vin 
-              {time_bound_s_sql}
-              AND s.timestamp BETWEEN t.t_start - INTERVAL '2 minutes' AND t.t_end + INTERVAL '2 minutes'
-            WHERE s.lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
-              AND s.lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
-            GROUP BY t.vin, t.journey_no, t.route
-        ),
         events AS (
-            SELECT 
-                vin, 
-                timestamp, 
+            SELECT
+                vin,
+                timestamp,
+                lat,
+                lon,
                 event_type,
-                vehicle_speed
+                {section_case} as section
             FROM sensor
             WHERE event_type IN (1, 2, 3)
-              -- Restricts warning events strictly to the SRMA Zone (Section B)
-              AND lat BETWEEN {SRMA_BBOX['lat_min']} AND {SRMA_BBOX['lat_max']} 
-              AND lon BETWEEN {SRMA_BBOX['lon_min']} AND {SRMA_BBOX['lon_max']}
-              {spatial_sql}
+              AND lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
+              AND lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
               {time_sql}
               {speed_filter}
               {hour_filter_events}
         )
-        SELECT 
+        SELECT
             t.route,
             COUNT(DISTINCT t.vin || '_' || CAST(t.journey_no AS VARCHAR)) as trips,
-            COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN t.vin || '_' || CAST(t.journey_no AS VARCHAR) END) as brake,
-            COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN t.vin || '_' || CAST(t.journey_no AS VARCHAR) END) as turn,
-            COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN t.vin || '_' || CAST(t.journey_no AS VARCHAR) END) as accel
-        FROM journey_bounds t
-        LEFT JOIN events e ON t.vin = e.vin 
-          AND e.timestamp BETWEEN t.t_start - INTERVAL '2 minutes' AND t.t_end + INTERVAL '2 minutes'
-          AND e.timestamp BETWEEN t.journey_start AND t.journey_end
+            COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN {_EVENT_KEY} END) as brake,
+            COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN {_EVENT_KEY} END) as turn,
+            COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN {_EVENT_KEY} END) as accel
+        FROM journey_segments t
+        LEFT JOIN events e ON e.vin = t.vin
+          -- Strict gate-to-gate leg window, event must lie in THIS route's own section
+          AND e.timestamp BETWEEN t.t_start AND t.t_end
+          AND e.section = CASE
+                WHEN t.route IN ('12', '21') THEN 'A'
+                WHEN t.route IN ('23', '32') THEN 'B'
+                WHEN t.route IN ('34', '43') THEN 'C'
+              END
         WHERE 1=1
           {hour_filter_trips}
         GROUP BY t.route
@@ -508,12 +517,13 @@ def get_route_time_matrix_query(has_time: bool, use_spatial: bool = False) -> st
 def get_route_trips_query(
     route: str,
     use_spatial: bool = False,
-    limit: int = 10
+    limit: int = 10,
+    offset: int = 0
 ) -> str:
     """Return SQL query for fetching crossings and events for a bidirectional route (Task 1).
     Takes a combined route ('AC' or 'BC') and retrieves both directions.
-    Only the first `limit` trips (earliest journey_start) are returned per load to keep the
-    payload small and the panel responsive on routes with tens of thousands of trips.
+    Returns one page of `limit` trips (ordered by journey_start) starting at `offset`, so the
+    panel can page through routes with tens of thousands of trips via prev/next controls.
     """
     cte_sql = _get_sessionized_journeys_sql(route, use_spatial)
     cte_sql = cte_sql.replace("-- time_placeholder --", "AND timestamp BETWEEN %s AND %s")
@@ -540,7 +550,7 @@ def get_route_trips_query(
         limited_trips AS (
             SELECT * FROM journey_bounds
             ORDER BY journey_start
-            LIMIT {int(limit)}
+            LIMIT {int(limit)} OFFSET {int(offset)}
         )
         SELECT 
             t.vin,

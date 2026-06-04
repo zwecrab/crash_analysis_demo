@@ -160,12 +160,14 @@ export async function fetchSectionAnalytics() {
   );
 }
 
-export async function fetchRouteTrips(route, eventFilter = 'all') {
+export async function fetchRouteTrips(route, eventFilter = 'all', offset = 0, limit = 10) {
   const p = new URLSearchParams({
     route: route,
     t_start: iso(S.tStartMs),
     t_end: iso(S.tEndMs),
-    event_filter: eventFilter
+    event_filter: eventFilter,
+    limit: limit,
+    offset: offset
   });
   return api('/api/route-trips?' + p);
 }

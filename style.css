@@ -237,6 +237,30 @@ html,body{
 #routes-list::-webkit-scrollbar-thumb{background:var(--border-paper-mid);border-radius:4px}
 #routes-list::-webkit-scrollbar-thumb:hover{background:var(--ink-dim)}
 
+#routes-panel.collapsed #routes-pager{display:none}
+.routes-pager{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:8px 14px;
+  border-top:1px solid var(--border-paper);
+  background:var(--bg-paper-hi);
+}
+.routes-pager.hidden{display:none}
+.pager-btn{
+  background:var(--bg-paper);
+  border:1px solid var(--border-paper-mid);
+  color:var(--ink);
+  border-radius:var(--radius-sm);
+  padding:3px 13px;
+  font-size:12px;cursor:pointer;
+  transition:all .15s;
+}
+.pager-btn:hover:not(:disabled){background:var(--accent);color:#fff;border-color:var(--accent)}
+.pager-btn:disabled{opacity:.4;cursor:not-allowed}
+.pager-range{
+  font-family:var(--font-sans);font-size:11.5px;
+  color:var(--ink-muted);font-variant-numeric:tabular-nums;
+}
+
 .route-trip-item{
   padding:11px 14px 11px 17px;
   border-bottom:1px solid var(--border-paper);
@@ -1250,44 +1274,6 @@ html,body{
   box-shadow: var(--shadow-lg) !important;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-}
-
-/* Routes Panel Pagination Controls */
-.routes-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-top: 1px solid var(--border-paper);
-  background: var(--bg-paper-hi);
-  margin-top: auto;
-}
-.pag-btn {
-  background: var(--bg-paper-hi);
-  border: 1px solid var(--border-paper-mid);
-  color: var(--ink);
-  border-radius: var(--radius-sm);
-  padding: 4px 10px;
-  font-size: 11px;
-  font-family: var(--font-sans);
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.pag-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--bg-paper-hover);
-}
-.pag-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.pagination-info {
-  font-size: 11px;
-  color: var(--ink-muted);
-  font-family: var(--font-sans);
-  font-weight: 500;
 }
 
 

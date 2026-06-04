@@ -60,6 +60,7 @@
         <div id="routes-header">
           <span>Route Trips</span>
           <div id="routes-header-right">
+            <span id="route-trips-count" class="route-count-badge">0</span>
             <button id="btn-collapse-routes" class="collapse-btn" title="Collapse panel">▶</button>
           </div>
         </div>
@@ -78,6 +79,11 @@
         </div>
         <div id="routes-list">
           <div class="routes-empty">Select a route in the matrix to view trips.</div>
+        </div>
+        <div id="routes-pager" class="routes-pager hidden">
+          <button id="btn-trips-prev" class="pager-btn" title="Previous trips" disabled>◀</button>
+          <span id="trips-range" class="pager-range">—</span>
+          <button id="btn-trips-next" class="pager-btn" title="Load more trips">▶</button>
         </div>
       </aside>
 
@@ -347,7 +353,7 @@
       </div>
     </footer>
   </div>
-  <script type="module" src="/dashboard.js?v=20260604_3"></script>
+  <script type="module" src="/dashboard.js?v=20260520"></script>
 </body>
 
 </html>

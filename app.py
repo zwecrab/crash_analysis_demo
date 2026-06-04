@@ -560,7 +560,8 @@ def get_route_matrix(
     cur.execute("SET statement_timeout = '20000'")
 
     query = sql_schemas.get_route_matrix_query(speed_bracket, hour, bool(t_start and t_end), _SPATIAL_AVAILABLE)
-    params = (t_start, t_end, t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
+    # New matrix uses two time placeholders: the sessionization CTE and the events CTE.
+    params = (t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
 
     try:
         cur.execute(query, params)
@@ -643,7 +644,8 @@ def get_route_trips(
     t_start: str = Query(..., description="ISO start timestamp"),
     t_end: str = Query(..., description="ISO end timestamp"),
     event_filter: str = Query("all", description="all, 1, 2, 3, normal"),
-    limit: int = Query(10, ge=1, le=500, description="Max trips to return per load"),
+    limit: int = Query(10, ge=1, le=500, description="Trips per page"),
+    offset: int = Query(0, ge=0, description="Page offset (multiples of limit)"),
 ):
     """Fetch vehicle crossings and their events on a specific adjacent directional route inside a time window."""
     if route not in ("12", "23", "34", "43", "32", "21"):
@@ -651,7 +653,10 @@ def get_route_trips(
 
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
-    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE, limit)
+    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE, limit, offset)
+    # Each route's events are shown in its OWN section (12/21→A, 23/32→B, 34/43→C),
+    # matching the route matrix and per-section breakdown cards.
+    section_poly = coordinates.section_polygon_for_route(route)
 
     try:
         cur.execute(query, (t_start, t_end, t_start, t_end, t_start, t_end))
@@ -682,18 +687,17 @@ def get_route_trips(
             trip["max_speed"] = max(trip["max_speed"], float(spd))
             
         if ev_type in (1, 2, 3) and ev_time is not None and lat is not None and lon is not None:
-            # Restricts warnings strictly to the SRMA zone (Section B) for routes (Task 2)
-            if coordinates.SRMA_BBOX['lat_min'] <= float(lat) <= coordinates.SRMA_BBOX['lat_max'] and coordinates.SRMA_BBOX['lon_min'] <= float(lon) <= coordinates.SRMA_BBOX['lon_max']:
-                if coordinates.point_in_polygon(float(lat), float(lon), coordinates.SRMA_POLYGON):
-                    # Avoid duplicate events at the exact same millisecond
-                    if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
-                        trip["events"].append({
-                            "event_type": int(ev_type),
-                            "timestamp": ev_time.isoformat() + "Z",
-                            "lat": float(lat),
-                            "lon": float(lon),
-                            "speed": float(spd) if spd is not None else 0.0
-                        })
+            # Restrict events to this route's own section polygon
+            if section_poly and coordinates.point_in_polygon(float(lat), float(lon), section_poly):
+                # Avoid duplicate events at the exact same millisecond
+                if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
+                    trip["events"].append({
+                        "event_type": int(ev_type),
+                        "timestamp": ev_time.isoformat() + "Z",
+                        "lat": float(lat),
+                        "lon": float(lon),
+                        "speed": float(spd) if spd is not None else 0.0
+                    })
 
     # Apply the event filter
     filtered_trips = []
@@ -718,7 +722,18 @@ def get_route_trips(
         else: # "all"
             filtered_trips.append(trip)
 
-    return {"trips": filtered_trips}
+    # raw_count = trips fetched this page before the event filter; a full page implies
+    # there may be a next page (pagination control on the frontend).
+    raw_count = len(trips_dict)
+    return {
+        "trips": filtered_trips,
+        "page": {
+            "limit": limit,
+            "offset": offset,
+            "raw_count": raw_count,
+            "has_more": raw_count >= limit,
+        },
+    }
 
 
 @app.get("/api/debug")

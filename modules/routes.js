@@ -13,8 +13,9 @@ export const R = {
   activeRoute: null,
   eventFilter: 'all',
   trips: [],
-  currentPage: 0,
-  pageSize: 10,
+  tripsOffset: 0,
+  tripsPageSize: 10,
+  tripsHasMore: false,
   eventMarkers: [],
   focusPolyline: null,
   focusMarkers: [],
@@ -29,9 +30,27 @@ export function initRoutesPanel() {
   if (filterSel) {
     filterSel.addEventListener('change', function () {
       R.eventFilter = this.value;
+      R.tripsOffset = 0; // new filter → back to first page
       if (R.activeRoute) {
         refreshRouteTrips();
       }
+    });
+  }
+
+  const prevBtn = document.getElementById('btn-trips-prev');
+  const nextBtn = document.getElementById('btn-trips-next');
+  if (prevBtn) {
+    prevBtn.addEventListener('click', () => {
+      if (R.tripsOffset <= 0) return;
+      R.tripsOffset = Math.max(0, R.tripsOffset - R.tripsPageSize);
+      refreshRouteTrips();
+    });
+  }
+  if (nextBtn) {
+    nextBtn.addEventListener('click', () => {
+      if (!R.tripsHasMore) return;
+      R.tripsOffset += R.tripsPageSize;
+      refreshRouteTrips();
     });
   }
 
@@ -64,7 +83,8 @@ export function initRoutesPanel() {
 export async function setActiveRoute(routeId) {
   R.activeRoute = routeId;
   S.activeRoute = routeId; // sync with global state
-  
+  R.tripsOffset = 0; // new route → first page
+
   // Expand routes panel
   const panel = document.getElementById('routes-panel');
   const collapseBtn = document.getElementById('btn-collapse-routes');
@@ -122,7 +142,12 @@ export function clearActiveRoute() {
     listEl.innerHTML = '<div class="routes-empty">Select a route in the matrix to view trips.</div>';
   }
 
-  // No-op (removed countEl)
+  const countEl = document.getElementById('route-trips-count');
+  if (countEl) countEl.textContent = '0';
+
+  R.tripsOffset = 0;
+  const pager = document.getElementById('routes-pager');
+  if (pager) pager.classList.add('hidden');
 
   // Clear matrix highlights
   document.querySelectorAll('.rm-row').forEach(row => row.classList.remove('active'));
@@ -143,22 +168,43 @@ export async function refreshRouteTrips() {
   if (!R.activeRoute) return;
 
   const listEl = document.getElementById('routes-list');
+  const countEl = document.getElementById('route-trips-count');
   if (listEl) {
     listEl.innerHTML = '<div class="routes-empty"><div class="section-spinner"></div>Loading trips…</div>';
   }
 
   try {
-    const res = await fetchRouteTrips(R.activeRoute, R.eventFilter);
+    const res = await fetchRouteTrips(R.activeRoute, R.eventFilter, R.tripsOffset, R.tripsPageSize);
     R.trips = res.trips || [];
-    R.currentPage = 0; // Reset pagination page
-    
+    R.tripsHasMore = !!(res.page && res.page.has_more);
+
+    if (countEl) countEl.textContent = R.trips.length.toLocaleString();
+
     renderRouteTripsList();
+    updateTripsPager(res.page);
   } catch (err) {
     console.error('Failed to fetch route trips:', err);
     if (listEl) {
       listEl.innerHTML = `<div class="routes-empty" style="color:var(--sev-high)">Error loading trips:<br>${err.message || err}</div>`;
     }
   }
+}
+
+/* ── Pager: prev/next controls for paged trip loading ──── */
+function updateTripsPager(page) {
+  const pager = document.getElementById('routes-pager');
+  const rangeEl = document.getElementById('trips-range');
+  const prevBtn = document.getElementById('btn-trips-prev');
+  const nextBtn = document.getElementById('btn-trips-next');
+  if (!pager) return;
+
+  pager.classList.remove('hidden');
+  const rawCount = (page && page.raw_count) || R.trips.length;
+  const from = rawCount === 0 ? 0 : R.tripsOffset + 1;
+  const to = R.tripsOffset + rawCount;
+  if (rangeEl) rangeEl.textContent = rawCount === 0 ? 'No trips' : `${from.toLocaleString()}–${to.toLocaleString()}`;
+  if (prevBtn) prevBtn.disabled = R.tripsOffset <= 0;
+  if (nextBtn) nextBtn.disabled = !R.tripsHasMore;
 }
 
 /* ── Render Trips List ─────────────────────────────────── */
@@ -171,18 +217,8 @@ function renderRouteTripsList() {
     return;
   }
 
-  const totalPages = Math.ceil(R.trips.length / R.pageSize);
-  if (R.currentPage >= totalPages) {
-    R.currentPage = Math.max(0, totalPages - 1);
-  }
-
-  const startIndex = R.currentPage * R.pageSize;
-  const endIndex = Math.min(startIndex + R.pageSize, R.trips.length);
-  const tripsToRender = R.trips.slice(startIndex, endIndex);
-
-  const itemsHtml = tripsToRender
-    .map((trip, localIdx) => {
-      const globalIdx = startIndex + localIdx;
+  listEl.innerHTML = R.trips
+    .map((trip, idx) => {
       const vinTail = trip.vin ? trip.vin.slice(-6) : '—';
       const d = new Date(trip.t_start);
       const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
@@ -208,7 +244,7 @@ function renderRouteTripsList() {
       const isFocused = R.focusedVin === trip.vin && R.focusCenterMs === d.getTime();
 
       return `
-        <div class="route-trip-item${isFocused ? ' active' : ''}" data-idx="${globalIdx}">
+        <div class="route-trip-item${isFocused ? ' active' : ''}" data-idx="${idx}">
           <span class="trip-dot ${primaryClass}"></span>
           <div class="trip-body">
             <div class="trip-title">VIN ···${vinTail}</div>
@@ -224,45 +260,12 @@ function renderRouteTripsList() {
     })
     .join('');
 
-  const paginationHtml = `
-    <div class="routes-pagination">
-      <button id="btn-prev-page" class="pag-btn" ${R.currentPage === 0 ? 'disabled' : ''}>Back</button>
-      <span class="pagination-info">Page ${R.currentPage + 1} of ${totalPages}</span>
-      <button id="btn-next-page" class="pag-btn" ${R.currentPage >= totalPages - 1 ? 'disabled' : ''}>Next</button>
-    </div>
-  `;
-
-  listEl.innerHTML = itemsHtml + paginationHtml;
-
   listEl.querySelectorAll('.route-trip-item').forEach(el => {
     el.addEventListener('click', () => {
       const idx = parseInt(el.dataset.idx, 10);
       focusTrip(R.trips[idx]);
     });
   });
-
-  const prevBtn = document.getElementById('btn-prev-page');
-  const nextBtn = document.getElementById('btn-next-page');
-
-  if (prevBtn) {
-    prevBtn.addEventListener('click', () => {
-      if (R.currentPage > 0) {
-        R.currentPage--;
-        renderRouteTripsList();
-        listEl.scrollTop = 0;
-      }
-    });
-  }
-
-  if (nextBtn) {
-    nextBtn.addEventListener('click', () => {
-      if (R.currentPage < totalPages - 1) {
-        R.currentPage++;
-        renderRouteTripsList();
-        listEl.scrollTop = 0;
-      }
-    });
-  }
 }
 
 /* ── Draw Event Markers on Map ────────────────────────── */
