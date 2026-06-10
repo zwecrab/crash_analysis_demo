@@ -241,7 +241,7 @@ export function updateRiskForCurrentDay(force) {
   }
 }
 
-export function updateRouteMatrixUI(matrix) {
+export function updateRouteMatrixUI(matrix, partial) {
   if (!matrix) return;
   const routes = ['12', '23', '34', '43', '32', '21'];
   routes.forEach(r => {
@@ -250,11 +250,21 @@ export function updateRouteMatrixUI(matrix) {
     const brakeEl = document.getElementById(`rm-${r}-brake`);
     const turnEl = document.getElementById(`rm-${r}-turn`);
     const accelEl = document.getElementById(`rm-${r}-accel`);
-    
+
     if (tripsEl) tripsEl.textContent = data.trips.toLocaleString();
     if (brakeEl) brakeEl.textContent = data.brake.toLocaleString();
     if (turnEl) turnEl.textContent = data.turn.toLocaleString();
     if (accelEl) accelEl.textContent = data.accel.toLocaleString();
+  });
+
+  // Partial rows: events from vehicles that crossed at most one of the section's gates.
+  // Directional rows + partial = the section's full event total.
+  ['A', 'B', 'C'].forEach(sec => {
+    const d = (partial && partial[sec]) || { brake: 0, turn: 0, accel: 0 };
+    ['brake', 'turn', 'accel'].forEach(k => {
+      const el = document.getElementById(`rm-p${sec}-${k}`);
+      if (el) el.textContent = (d[k] || 0).toLocaleString();
+    });
   });
 }
 

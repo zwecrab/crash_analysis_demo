@@ -1,170 +1,255 @@
 """
 sql_schemas.py — Parametric SQL schemas for L-DCM Crash Risk Analysis visualizer.
 
-This module houses all database query templates as clean, pure Python functions,
-utilizing coordinates.py configurations to dynamically assemble gate classification
-logic and road search limits.
+This module houses all database query templates as pure Python functions, built on
+coordinates.py geometry (centerline projection, gate progress, section polygons).
+
+Canonical counting definitions (shared by analytics, heatmap, route matrix, trips):
+
+- EVENT IDENTITY: one physical event = DISTINCT (vin, timestamp, event_type, lat, lon).
+  The raw table contains exact duplicate rows; every counting query dedupes on this key.
+- VISIT: a vehicle's continuous in-corridor presence (|perp offset| <= CORRIDOR_HALF_M,
+  inside ROAD_BOUNDS), split whenever the gap between consecutive points exceeds the
+  5-minute transition interval.
+- GATE CROSSING: interior gates use the straddle test (two consecutive in-visit points on
+  opposite sides of the gate's centerline progress, continuous movement only). Edge gates
+  (telemetry exists on one side only) are credited ONCE per visit, at the visit's
+  minimum-progress point below the section cap.
+- EVENT ATTRIBUTION: an event joins its vehicle's visit containing its timestamp
+  (fallback: nearest visit within 5 minutes — covers events whose GPS point falls inside
+  a section polygon but just outside the corridor band). If the visit crossed BOTH gates
+  of the event's section, the event belongs to the directional route (direction from the
+  first-crossing order); otherwise it belongs to the section's PARTIAL bucket.
+  Directional + partial therefore partition the section total exactly.
 """
 
 from coordinates import (
     ROAD_BOUNDS, CORRIDOR_HALF_M, GATE_PROGRESS, progress_expr,
-    EDGE_GATES,
+    EDGE_GATES, ROUTE_SECTION, SECTION_GATES,
+    polygon_to_wkt,
 )
 
-def _get_sessionized_journeys_sql(route: str = None, use_spatial: bool = False, transition_interval_str: str = "5 minutes") -> str:
-    """Return the CTEs to sessionize gate crossings into unique journeys and segments.
-    Includes time_placeholder to be replaced with time_sql filter.
+# Gate ids ordered by centerline progress; the column order of every per-gate
+# crossing-time field (tg<id>) in queries built here.
+GATE_IDS = [g for g, _ in sorted(GATE_PROGRESS.items(), key=lambda kv: kv[1])]
 
-    Gates are detected as LINE CROSSINGS along the road centerline: a vehicle crosses
-    gate g whenever two consecutive in-corridor points straddle that gate's progress
-    value. This catches every vehicle that drives through, even when 1 Hz GPS skips the
-    narrow gate box, while the corridor constraint keeps detection inside the research zone.
+# All adjacent directional routes, NE then SW per gate pair (e.g. 12, 21, 23, 32, ...).
+ROUTES = [r for pair in zip(GATE_IDS, GATE_IDS[1:]) for r in (pair[0] + pair[1], pair[1] + pair[0])]
+
+
+# ── Shared filter clause helpers ──────────────────────────────────
+
+def _speed_sql(speed_bracket: int) -> str:
+    """Speed bracket filter. Brackets are contiguous (<=60, 60–100, >100) so no value
+    falls in a gap; NULL speeds (most rows) only match bracket 0 (= no filter)."""
+    if speed_bracket == 1:
+        return "AND vehicle_speed >= 0 AND vehicle_speed <= 60"
+    if speed_bracket == 2:
+        return "AND vehicle_speed > 60 AND vehicle_speed <= 100"
+    if speed_bracket == 3:
+        return "AND vehicle_speed > 100"
+    return ""
+
+
+def _hour_sql(hour: int, col: str = "timestamp") -> str:
+    """Bangkok local-hour filter (UTC+7)."""
+    if 0 <= hour <= 23:
+        return f"AND CAST(EXTRACT(HOUR FROM {col} + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
+    return ""
+
+
+def _road_bbox_sql(lat: str = "lat", lon: str = "lon") -> str:
+    return (f"{lat} BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']} "
+            f"AND {lon} BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}")
+
+
+# ── Visit sessionization core ─────────────────────────────────────
+
+def _get_visits_sql(transition_interval_str: str = "5 minutes") -> str:
+    """CTE chain implementing the canonical VISIT and GATE CROSSING definitions.
+
+    Produces:
+      visits       — one row per (vin, visit_no): t0/t1 bounds + first crossing time per
+                     gate (tg1..tgN, NULL when the gate was not crossed in that visit)
+      route_visits — one row per completed directional gate-pair traversal:
+                     (vin, visit_no, t0, t1, route, t_origin, t_dest)
+
+    Contains `-- time_placeholder --` in the corridor CTE (2 params when filled).
     """
     s_expr, d_expr = progress_expr("lat", "lon")
+    sorted_gates = sorted(GATE_PROGRESS.items(), key=lambda kv: kv[1])
 
-    # Per gate: interior gates use a straddle test (consecutive in-corridor points on
-    # opposite sides of the gate line, continuous movement only so a long stop can't fake
-    # a crossing). An edge gate sits at the limit of data coverage (no points on one side
-    # to straddle) — but since nothing exists beyond it, any vehicle appearing in its
-    # section must have entered through it. So we credit the gate at the vehicle's CLOSEST
-    # APPROACH (local progress-minimum) within that section, which lands correctly for both
-    # entry (NE) and exit (SW) directions.
-    _sorted_sg = sorted(GATE_PROGRESS.values())
     def _section_cap(sg):
-        above = [v for v in _sorted_sg if v > sg]
-        return (min(above) - 5.0) if above else sg  # stay just shy of the next interior gate
+        above = [v for _, v in sorted_gates if v > sg]
+        return (min(above) - 5.0) if above else sg  # stay just shy of the next gate
 
-    def _gate_clause(g, sg):
+    gate_branches = []
+    for g, sg in sorted_gates:
         if g in EDGE_GATES:
-            return f"""            SELECT vin, timestamp, '{g}' as gate FROM stepped
-            WHERE s < {_section_cap(sg)}
-              AND (prev_s IS NULL OR s <= prev_s)
-              AND (next_s IS NULL OR s <= next_s)"""
-        return f"""            SELECT vin, timestamp, '{g}' as gate FROM stepped
+            # Edge gate: telemetry starts/ends here, so the straddle test can't fire.
+            # Since nothing exists beyond it, any vehicle inside its section must have
+            # passed through it: credit ONE crossing per visit, at the visit's closest
+            # approach (minimum progress) below the section cap. One deterministic hit
+            # per visit — a stationary vehicle no longer generates a hit per second.
+            # Caveat: a vehicle that dwells in this section between its two gate events
+            # yields a truthful but large gate-to-gate elapsed time (affects the time
+            # matrix MAX for routes touching this gate).
+            gate_branches.append(f"""            SELECT vin, visit_no, timestamp, '{g}' AS gate
+            FROM (
+                SELECT vin, visit_no, timestamp, s,
+                       ROW_NUMBER() OVER (PARTITION BY vin, visit_no ORDER BY s, timestamp) AS rn
+                FROM sessioned
+            ) edge_{g}
+            WHERE rn = 1 AND s < {_section_cap(sg)}""")
+        else:
+            gate_branches.append(f"""            SELECT vin, visit_no, timestamp, '{g}' AS gate
+            FROM visit_stepped
             WHERE prev_s IS NOT NULL
               AND timestamp - prev_t <= INTERVAL '{transition_interval_str}'
-              AND (s - {sg}) * (prev_s - {sg}) <= 0"""
+              AND (s - {sg}) * (prev_s - {sg}) <= 0""")
+    gate_hits = "\n            UNION ALL\n".join(gate_branches)
 
-    straddle = "\n            UNION ALL\n".join(
-        _gate_clause(g, sg) for g, sg in sorted(GATE_PROGRESS.items())
+    tg_aggs = ",\n                   ".join(
+        f"MIN(CASE WHEN gate = '{g}' THEN timestamp END) AS tg{g}" for g in GATE_IDS
     )
+    tg_cols = ", ".join(f"g.tg{g}" for g in GATE_IDS)
 
-    route_filter = f"WHERE route = '{route}'" if route else ""
+    # A single GPS step can straddle BOTH gates of a section (gap up to 5 min), giving
+    # the two crossings the same timestamp. Such ties resolve to the NE route (<=) —
+    # the same rule the Python matrix bucketing and _route_bucket_condition apply.
+    route_branches = []
+    for lo, hi in zip(GATE_IDS, GATE_IDS[1:]):
+        route_branches.append(
+            f"            SELECT vin, visit_no, t0, t1, '{lo}{hi}' AS route, tg{lo} AS t_origin, tg{hi} AS t_dest"
+            f" FROM visits WHERE tg{lo} IS NOT NULL AND tg{hi} IS NOT NULL AND tg{lo} <= tg{hi}"
+        )
+        route_branches.append(
+            f"            SELECT vin, visit_no, t0, t1, '{hi}{lo}' AS route, tg{hi} AS t_origin, tg{lo} AS t_dest"
+            f" FROM visits WHERE tg{lo} IS NOT NULL AND tg{hi} IS NOT NULL AND tg{hi} < tg{lo}"
+        )
+    route_visits = "\n            UNION ALL\n".join(route_branches)
 
     return f"""
         corridor AS (
-            SELECT
-                vin,
-                timestamp,
-                {s_expr} as s
+            -- DISTINCT drops the raw table's exact-duplicate rows; the (timestamp, s)
+            -- window tiebreak below keeps same-second readings deterministic.
+            SELECT DISTINCT vin, timestamp, {s_expr} AS s
             FROM sensor
-            WHERE lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
-              AND lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
+            WHERE {_road_bbox_sql()}
               AND ABS({d_expr}) <= {CORRIDOR_HALF_M}
               -- time_placeholder --
         ),
         stepped AS (
-            SELECT
-                vin,
-                timestamp,
-                s,
-                LAG(s)         OVER (PARTITION BY vin ORDER BY timestamp) as prev_s,
-                LAG(timestamp) OVER (PARTITION BY vin ORDER BY timestamp) as prev_t,
-                LEAD(s)        OVER (PARTITION BY vin ORDER BY timestamp) as next_s
+            SELECT vin, timestamp, s,
+                   LAG(timestamp) OVER (PARTITION BY vin ORDER BY timestamp, s) AS prev_t
             FROM corridor
         ),
-        raw_gates AS (
-{straddle}
+        sessioned AS (
+            SELECT vin, timestamp, s,
+                   SUM(CASE WHEN prev_t IS NULL OR timestamp - prev_t > INTERVAL '{transition_interval_str}'
+                            THEN 1 ELSE 0 END)
+                     OVER (PARTITION BY vin ORDER BY timestamp, s
+                           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS visit_no
+            FROM stepped
         ),
-        gate_crossings AS (
-            SELECT
-                vin,
-                timestamp,
-                gate,
-                LAG(timestamp) OVER (PARTITION BY vin ORDER BY timestamp) as prev_ts
-            FROM raw_gates
-            WHERE gate IS NOT NULL
+        visit_stepped AS (
+            SELECT vin, visit_no, timestamp, s,
+                   LAG(s)         OVER (PARTITION BY vin, visit_no ORDER BY timestamp, s) AS prev_s,
+                   LAG(timestamp) OVER (PARTITION BY vin, visit_no ORDER BY timestamp, s) AS prev_t
+            FROM sessioned
         ),
-        journey_starts AS (
-            SELECT 
-                vin,
-                timestamp,
-                gate,
-                CASE WHEN prev_ts IS NULL OR timestamp - prev_ts > INTERVAL '{transition_interval_str}' THEN 1 ELSE 0 END as is_start
-            FROM gate_crossings
+        gate_hits AS (
+{gate_hits}
         ),
-        journey_ids AS (
-            SELECT 
-                vin,
-                timestamp,
-                gate,
-                SUM(is_start) OVER (PARTITION BY vin ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as journey_no
-            FROM journey_starts
+        visit_bounds AS (
+            SELECT vin, visit_no, MIN(timestamp) AS t0, MAX(timestamp) AS t1
+            FROM sessioned
+            GROUP BY vin, visit_no
         ),
-        journey_summary AS (
-            SELECT 
-                vin,
-                journey_no,
-                MIN(timestamp) as t_start,
-                MAX(timestamp) as t_end,
-                MIN(CAST(gate AS INTEGER)) as min_gate,
-                MAX(CAST(gate AS INTEGER)) as max_gate,
-                MIN(CASE WHEN gate = '1' THEN timestamp END) as t1,
-                MIN(CASE WHEN gate = '2' THEN timestamp END) as t2,
-                MIN(CASE WHEN gate = '3' THEN timestamp END) as t3,
-                MIN(CASE WHEN gate = '4' THEN timestamp END) as t4
-            FROM journey_ids
-            GROUP BY vin, journey_no
+        gate_times AS (
+            SELECT vin, visit_no,
+                   {tg_aggs}
+            FROM gate_hits
+            GROUP BY vin, visit_no
         ),
-        journey_directions AS (
-            SELECT
-                vin,
-                journey_no,
-                t_start,
-                t_end,
-                min_gate,
-                max_gate,
-                t1, t2, t3, t4,
-                CASE
-                    WHEN (t1 IS NOT NULL AND t2 IS NOT NULL AND t1 < t2)
-                      OR (t2 IS NOT NULL AND t3 IS NOT NULL AND t2 < t3)
-                      OR (t3 IS NOT NULL AND t4 IS NOT NULL AND t3 < t4)
-                      OR (t1 IS NOT NULL AND t3 IS NOT NULL AND t1 < t3)
-                      OR (t2 IS NOT NULL AND t4 IS NOT NULL AND t2 < t4)
-                      OR (t1 IS NOT NULL AND t4 IS NOT NULL AND t1 < t4)
-                      THEN 'NE'
-                    WHEN (t2 IS NOT NULL AND t1 IS NOT NULL AND t2 < t1)
-                      OR (t3 IS NOT NULL AND t2 IS NOT NULL AND t3 < t2)
-                      OR (t4 IS NOT NULL AND t3 IS NOT NULL AND t4 < t3)
-                      OR (t3 IS NOT NULL AND t1 IS NOT NULL AND t3 < t1)
-                      OR (t4 IS NOT NULL AND t2 IS NOT NULL AND t4 < t2)
-                      OR (t4 IS NOT NULL AND t1 IS NOT NULL AND t4 < t1)
-                      THEN 'SW'
-                    ELSE NULL
-                END as dir
-            FROM journey_summary
+        visits AS (
+            SELECT b.vin, b.visit_no, b.t0, b.t1, {tg_cols}
+            FROM visit_bounds b
+            LEFT JOIN gate_times g ON b.vin = g.vin AND b.visit_no = g.visit_no
         ),
-        journey_segments_all AS (
-            -- Each segment carries the LEG crossing times (origin gate -> destination gate),
-            -- NOT the whole-journey span, so downstream event counts stay strictly between
-            -- the two gates the segment is named for.
-            SELECT vin, journey_no, t1 as t_start, t2 as t_end, '12' as route FROM journey_directions WHERE dir = 'NE' AND t1 IS NOT NULL AND t2 IS NOT NULL AND t1 < t2
-            UNION ALL
-            SELECT vin, journey_no, t2 as t_start, t3 as t_end, '23' as route FROM journey_directions WHERE dir = 'NE' AND t2 IS NOT NULL AND t3 IS NOT NULL AND t2 < t3
-            UNION ALL
-            SELECT vin, journey_no, t3 as t_start, t4 as t_end, '34' as route FROM journey_directions WHERE dir = 'NE' AND t3 IS NOT NULL AND t4 IS NOT NULL AND t3 < t4
-            UNION ALL
-            SELECT vin, journey_no, t4 as t_start, t3 as t_end, '43' as route FROM journey_directions WHERE dir = 'SW' AND t4 IS NOT NULL AND t3 IS NOT NULL AND t4 < t3
-            UNION ALL
-            SELECT vin, journey_no, t3 as t_start, t2 as t_end, '32' as route FROM journey_directions WHERE dir = 'SW' AND t3 IS NOT NULL AND t2 IS NOT NULL AND t3 < t2
-            UNION ALL
-            SELECT vin, journey_no, t2 as t_start, t1 as t_end, '21' as route FROM journey_directions WHERE dir = 'SW' AND t2 IS NOT NULL AND t1 IS NOT NULL AND t2 < t1
-        ),
-        journey_segments AS (
-            SELECT * FROM journey_segments_all
-            {route_filter}
-        )
-    """
+        route_visits AS (
+{route_visits}
+        )"""
+
+
+def _deduped_events_sql(
+    time_sql: str = "",
+    extra_sql: str = "",
+    include_collisions: bool = False,
+    caller_bbox: bool = False,
+) -> str:
+    """`events` CTE applying the canonical EVENT IDENTITY dedup, with a synthetic
+    event_id so downstream best-visit selection can never collapse distinct events.
+    `caller_bbox` adds 4 positional params (lat_min, lat_max, lon_min, lon_max)."""
+    if include_collisions:
+        cols = "vin, timestamp, event_type, collision_type, lat, lon"
+        pred = "(event_type IS NOT NULL OR collision_type IS NOT NULL)"
+    else:
+        cols = "vin, timestamp, event_type, lat, lon"
+        pred = "event_type IN (1, 2, 3)"
+    bbox_sql = "AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s" if caller_bbox else ""
+    # NOTE: time placeholders render BEFORE the caller-bbox placeholders — callers bind
+    # params as ([corridor time,] [events time,] lat_min, lat_max, lon_min, lon_max).
+    return f"""        events AS (
+            SELECT ROW_NUMBER() OVER () AS event_id, {cols}
+            FROM (
+                SELECT DISTINCT {cols}
+                FROM sensor
+                WHERE {pred}
+                  AND {_road_bbox_sql()}
+                  {time_sql}
+                  {bbox_sql}
+                  {extra_sql}
+            ) deduped
+        )"""
+
+
+def _attributed_sql() -> str:
+    """`attributed` CTE joining each event to its vehicle's best visit: strict time
+    containment when possible, otherwise the nearest visit within 5 minutes."""
+    tg_cols = ", ".join(f"v.tg{g}" for g in GATE_IDS)
+    return f"""        attributed AS (
+            SELECT * FROM (
+                SELECT e.*, {tg_cols}, v.t0, v.t1,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY e.event_id
+                           ORDER BY CASE
+                               WHEN v.vin IS NULL THEN INTERVAL '6 minutes'
+                               WHEN e.timestamp BETWEEN v.t0 AND v.t1 THEN INTERVAL '0 seconds'
+                               WHEN e.timestamp < v.t0 THEN v.t0 - e.timestamp
+                               ELSE e.timestamp - v.t1 END,
+                               v.t0  -- deterministic tiebreak: earlier visit wins
+                       ) AS best_rn
+                FROM events e
+                LEFT JOIN visits v
+                  ON v.vin = e.vin
+                 AND e.timestamp BETWEEN v.t0 - INTERVAL '5 minutes' AND v.t1 + INTERVAL '5 minutes'
+            ) ranked
+            WHERE best_rn = 1
+        )"""
+
+
+def _route_bucket_condition(route: str) -> str:
+    """SQL predicate (on `attributed` columns): the event's best visit completed this
+    directional route — both section gates crossed, in this order. Same-timestamp
+    crossings (one GPS step straddling both gates) resolve to the NE route."""
+    sec = ROUTE_SECTION[route]
+    lo, hi = SECTION_GATES[sec]
+    cmp = f"tg{lo} <= tg{hi}" if route[0] == lo else f"tg{hi} < tg{lo}"
+    return f"tg{lo} IS NOT NULL AND tg{hi} IS NOT NULL AND {cmp}"
+
+
+# ── Simple queries (unchanged behavior) ───────────────────────────
 
 def get_meta_query() -> str:
     """Return the SQL query to fetch database time range and coordinate bounds."""
@@ -174,6 +259,7 @@ def get_meta_query() -> str:
                MIN(lon)::float8, MAX(lon)::float8
         FROM sensor
     """
+
 
 def get_suggested_window_query() -> str:
     """Return the tablesampled SQL query to discover the busiest 10-minute window."""
@@ -187,8 +273,10 @@ def get_suggested_window_query() -> str:
         LIMIT 1
     """
 
-def get_trajectory_query(sample_sec: int) -> tuple[str, str]:
-    """Return the UNION ALL query to sample vehicle trajectories and events concurrently."""
+
+def get_trajectory_query(sample_sec: int) -> str:
+    """Return the UNION ALL query to sample vehicle trajectories and events concurrently.
+    Positional params: (t_start, t_end, lat_min, lat_max, lon_min, lon_max) twice."""
     query = f"""
         -- Branch 1: normal driving (Basic 0x11 stream).
         -- Modulo-sample so we don't overwhelm the wire.
@@ -222,6 +310,7 @@ def get_trajectory_query(sample_sec: int) -> tuple[str, str]:
     """
     return query
 
+
 def get_accidents_query() -> str:
     """Return the parameterized query to fetch collision pins inside window and bbox."""
     return """
@@ -235,55 +324,6 @@ def get_accidents_query() -> str:
         LIMIT 500
     """
 
-def get_analytics_query(has_time: bool, route: str = None, use_spatial: bool = False) -> str:
-    """Return the pre-fetch query to retrieve all event rows for polygon statistics aggregation.
-    Supports dynamic active route transitions filtering.
-    """
-    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
-    time_bound_s_sql = "AND s.timestamp BETWEEN CAST(%s AS TIMESTAMP) - INTERVAL '5 minutes' AND CAST(%s AS TIMESTAMP) + INTERVAL '5 minutes'" if has_time else ""
-
-    if route and len(route) == 2:
-        cte_sql = _get_sessionized_journeys_sql(route, use_spatial)
-        cte_sql = cte_sql.replace("-- time_placeholder --", time_sql)
-
-        return f"""
-            WITH {cte_sql},
-            journey_bounds AS (
-                SELECT 
-                    t.vin,
-                    t.journey_no,
-                    MIN(t.t_start) as t_start,
-                    MAX(t.t_end) as t_end,
-                    MIN(s.timestamp) as journey_start,
-                    MAX(s.timestamp) as journey_end
-                FROM journey_segments t
-                JOIN sensor s ON t.vin = s.vin 
-                  {time_bound_s_sql}
-                  AND s.timestamp BETWEEN t.t_start - INTERVAL '2 minutes' AND t.t_end + INTERVAL '2 minutes'
-                WHERE s.lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
-                  AND s.lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
-                GROUP BY t.vin, t.journey_no
-            )
-            -- DISTINCT so an event that falls inside two overlapping legs of the same
-            -- vehicle is counted once (one physical event = one row).
-            SELECT DISTINCT s.timestamp, s.lat::float8, s.lon::float8, s.event_type, s.collision_type
-            FROM sensor s
-            JOIN journey_bounds t ON s.vin = t.vin
-              {time_bound_s_sql}
-              -- Strict gate-to-gate leg: only events between the two gate crossings.
-              AND s.timestamp BETWEEN t.t_start AND t.t_end
-            WHERE (s.event_type IS NOT NULL OR s.collision_type IS NOT NULL)
-              AND s.lat BETWEEN %s AND %s AND s.lon BETWEEN %s AND %s
-            ORDER BY s.timestamp
-        """
-
-    return f"""
-        SELECT timestamp, lat::float8, lon::float8, event_type, collision_type
-        FROM sensor
-        WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
-          AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
-        ORDER BY timestamp
-    """
 
 def get_vehicle_trajectory_query() -> str:
     """Return query for fetching full non-sampled telemetry for single vehicle investigation."""
@@ -296,293 +336,221 @@ def get_vehicle_trajectory_query() -> str:
         LIMIT 5000
     """
 
+
+# ── Analytics ─────────────────────────────────────────────────────
+
+def get_analytics_query(has_time: bool, route: str = None) -> str:
+    """Pre-fetch query for the analytics panel: deduped event/collision rows for Python
+    polygon aggregation.
+
+    Without route — params: (lat_min, lat_max, lon_min, lon_max [, t_start, t_end]).
+    With route   — rows restricted to events whose best visit completed the directional
+    route; params: ([t_start, t_end,] [t_start, t_end,] lat_min, lat_max, lon_min, lon_max)
+    — corridor time pair first, events time pair second, when has_time.
+    """
+    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
+
+    if route in ROUTE_SECTION:
+        visits_cte = _get_visits_sql().replace("-- time_placeholder --", time_sql)
+        events_cte = _deduped_events_sql(time_sql=time_sql, include_collisions=True, caller_bbox=True)
+        return f"""
+            WITH {visits_cte},
+{events_cte},
+{_attributed_sql()}
+            SELECT timestamp, lat::float8, lon::float8, event_type, collision_type
+            FROM attributed
+            WHERE {_route_bucket_condition(route)}
+            ORDER BY timestamp
+        """
+
+    return f"""
+        SELECT timestamp, lat::float8, lon::float8, event_type, collision_type
+        FROM (
+            SELECT DISTINCT vin, timestamp, lat, lon, event_type, collision_type
+            FROM sensor
+            WHERE (event_type IS NOT NULL OR collision_type IS NOT NULL)
+              AND lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s {time_sql}
+        ) deduped
+        ORDER BY timestamp
+    """
+
+
+# ── Heatmap ───────────────────────────────────────────────────────
+
 def get_heatmap_query(
     event_type: int,
     speed_bracket: int,
     hour: int,
     route: str = None,
-    use_spatial: bool = False
-) -> tuple[str, list]:
-    """Assemble and return the parameterized SQL heatmap query and parameters.
-    Supports dynamic bidirectional route constraints and ST_Within spatial filtering.
-    """
-    # Event filter clause
-    if event_type == 0:
-        event_sql = "AND event_type IS NOT NULL"
-    else:
-        event_sql = f"AND event_type = {event_type}"
-
-    # Speed bracket filter clause
-    if speed_bracket == 1:
-        speed_sql = "AND vehicle_speed BETWEEN 0 AND 60"
-    elif speed_bracket == 2:
-        speed_sql = "AND vehicle_speed BETWEEN 61 AND 100"
-    elif speed_bracket == 3:
-        speed_sql = "AND vehicle_speed > 100"
-    else:
-        speed_sql = ""
-
-    # Hour filter clause (Bangkok local time UTC+7)
-    if 0 <= hour <= 23:
-        hour_sql = f"AND CAST(EXTRACT(HOUR FROM timestamp + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-    else:
-        hour_sql = ""
-
-    if route and len(route) == 2:
-        # Use the same 5-minute journey-grouping interval as the analytics/route panels
-        # so the heatmap event count agrees with the per-section breakdown.
-        cte_sql = _get_sessionized_journeys_sql(route, use_spatial)
-        cte_sql = cte_sql.replace("-- time_placeholder --", "")
-
-        if use_spatial:
-            from coordinates import ROAD_POLYGONS, polygon_to_wkt, section_polygon_for_route
-            # Restrict strictly to the ONE section between this route's two gates,
-            # not the whole corridor (A+B+C) — otherwise events in neighbouring
-            # sections leak into the count for this gate pair.
-            seg_poly = section_polygon_for_route(route)
-            polys = [seg_poly] if seg_poly else ROAD_POLYGONS
-            wkt_polys = [polygon_to_wkt(p) for p in polys]
-            spatial_clauses = [f"ST_Within(ST_Point(s.lon, s.lat), ST_GeomFromText('{wkt}'))" for wkt in wkt_polys]
-            spatial_sql = f"AND ({' OR '.join(spatial_clauses)})"
-        else:
-            spatial_sql = ""
-
-        query = f"""
-            WITH {cte_sql}
-            -- Strict gate-to-gate leg: event timestamp must fall between the vehicle's
-            -- origin-gate and destination-gate crossings for this segment.
-            SELECT s.lat::float8, s.lon::float8
-            FROM sensor s
-            JOIN journey_segments t ON s.vin = t.vin
-              AND s.timestamp BETWEEN t.t_start AND t.t_end
-            WHERE s.lat BETWEEN %s AND %s AND s.lon BETWEEN %s AND %s
-              {spatial_sql}
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-            LIMIT 60000
-        """
-        return query
-
-    # General heatmap query with spatial/polygon filtering support
-    if use_spatial:
-        from coordinates import ROAD_POLYGONS, polygon_to_wkt
-        wkt_polys = [polygon_to_wkt(p) for p in ROAD_POLYGONS]
-        spatial_clauses = [f"ST_Within(ST_Point(lon, lat), ST_GeomFromText('{wkt}'))" for wkt in wkt_polys]
-        spatial_sql = f"AND ({' OR '.join(spatial_clauses)})"
-        
-        query = f"""
-            SELECT lat::float8, lon::float8
-            FROM sensor
-            WHERE lat  BETWEEN %s AND %s
-              AND lon  BETWEEN %s AND %s
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-              {spatial_sql}
-            LIMIT 60000
-        """
-    else:
-        query = f"""
-            SELECT lat::float8, lon::float8
-            FROM sensor
-            WHERE lat  BETWEEN %s AND %s
-              AND lon  BETWEEN %s AND %s
-              {event_sql}
-              {speed_sql}
-              {hour_sql}
-            LIMIT 60000
-        """
-    return query
-
-def _section_case_sql(use_spatial: bool, lat: str = "lat", lon: str = "lon") -> str:
-    """SQL CASE expression classifying a point into its road section id ('A'/'B'/'C').
-    Uses precise polygon containment when spatial is available (matches the per-section
-    breakdown card's point_in_polygon test); falls back to bounding boxes otherwise."""
-    from coordinates import ROAD_SECTIONS, polygon_to_wkt
-    if use_spatial:
-        whens = [
-            f"WHEN ST_Within(ST_Point({lon}, {lat}), ST_GeomFromText('{polygon_to_wkt(s['polygon'])}')) THEN '{s['id']}'"
-            for s in ROAD_SECTIONS
-        ]
-    else:
-        whens = [
-            f"WHEN {lat} BETWEEN {s['lat_min']} AND {s['lat_max']} AND {lon} BETWEEN {s['lon_min']} AND {s['lon_max']} THEN '{s['id']}'"
-            for s in ROAD_SECTIONS
-        ]
-    return "CASE " + " ".join(whens) + " ELSE NULL END"
-
-
-def get_route_matrix_query(
-    speed_bracket: int,
-    hour: int,
-    has_time: bool,
-    use_spatial: bool = False
+    use_spatial: bool = False,
 ) -> str:
-    """Return parameterized SQL query for the Origin-Destination Route Analysis Matrix.
+    """Heatmap point-cloud query (params: lat_min, lat_max, lon_min, lon_max).
 
-    BRAKE/TURN/ACCEL are EVENT counts within each route's OWN section (12/21→A, 23/32→B,
-    34/43→C), scoped to the strict gate-to-gate leg window — so they match the per-section
-    breakdown card exactly. TRIPS remains the distinct-journey count for the route.
+    With a route, points are the deduped events whose best visit completed that
+    directional route — identical attribution to the route matrix. The section-polygon
+    test is left to the caller (app.py, coordinates.point_in_polygon) in BOTH spatial
+    modes so the heatmap uses the exact same geometry predicate as the matrix —
+    ST_Within and the ray-cast disagree on boundary points.
     """
-    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
+    event_sql = "AND event_type IS NOT NULL" if event_type == 0 else f"AND event_type = {int(event_type)}"
+    speed_sql = _speed_sql(speed_bracket)
+    hour_sql = _hour_sql(hour)
 
-    if 0 <= hour <= 23:
-        hour_filter_events = f"AND CAST(EXTRACT(HOUR FROM timestamp + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-        hour_filter_trips = f"AND CAST(EXTRACT(HOUR FROM t.t_start + INTERVAL '7' HOUR) AS INTEGER) = {hour}"
-    else:
-        hour_filter_events = ""
-        hour_filter_trips = ""
-
-    if speed_bracket == 1:
-        speed_filter = "AND vehicle_speed BETWEEN 0 AND 60"
-    elif speed_bracket == 2:
-        speed_filter = "AND vehicle_speed BETWEEN 61 AND 100"
-    elif speed_bracket == 3:
-        speed_filter = "AND vehicle_speed > 100"
-    else:
-        speed_filter = ""
-
-    cte_sql = _get_sessionized_journeys_sql(None, use_spatial)
-    cte_sql = cte_sql.replace("-- time_placeholder --", time_sql)
-
-    section_case = _section_case_sql(use_spatial)
-
-    # Identity of one physical event (timestamp + location) — dedupes an event that falls
-    # inside two overlapping legs of the same vehicle, matching the card's DISTINCT rows.
-    _EVENT_KEY = "CAST(e.timestamp AS VARCHAR) || '|' || CAST(e.lat AS VARCHAR) || '|' || CAST(e.lon AS VARCHAR)"
-
-    query = f"""
-        WITH {cte_sql},
-        events AS (
-            SELECT
-                vin,
-                timestamp,
-                lat,
-                lon,
-                event_type,
-                {section_case} as section
-            FROM sensor
-            WHERE event_type IN (1, 2, 3)
-              AND lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
-              AND lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
-              {time_sql}
-              {speed_filter}
-              {hour_filter_events}
+    if route in ROUTE_SECTION:
+        visits_cte = _get_visits_sql().replace("-- time_placeholder --", "")
+        events_cte = _deduped_events_sql(
+            extra_sql=f"{event_sql}\n                  {speed_sql}\n                  {hour_sql}",
+            caller_bbox=True,
         )
-        SELECT
-            t.route,
-            COUNT(DISTINCT t.vin || '_' || CAST(t.journey_no AS VARCHAR)) as trips,
-            COUNT(DISTINCT CASE WHEN e.event_type = 2 THEN {_EVENT_KEY} END) as brake,
-            COUNT(DISTINCT CASE WHEN e.event_type = 3 THEN {_EVENT_KEY} END) as turn,
-            COUNT(DISTINCT CASE WHEN e.event_type = 1 THEN {_EVENT_KEY} END) as accel
-        FROM journey_segments t
-        LEFT JOIN events e ON e.vin = t.vin
-          -- Strict gate-to-gate leg window, event must lie in THIS route's own section
-          AND e.timestamp BETWEEN t.t_start AND t.t_end
-          AND e.section = CASE
-                WHEN t.route IN ('12', '21') THEN 'A'
-                WHEN t.route IN ('23', '32') THEN 'B'
-                WHEN t.route IN ('34', '43') THEN 'C'
-              END
-        WHERE 1=1
-          {hour_filter_trips}
-        GROUP BY t.route
-        ORDER BY t.route
-    """
-    return query
+        return f"""
+            WITH {visits_cte},
+{events_cte},
+{_attributed_sql()}
+            SELECT lat::float8, lon::float8
+            FROM attributed
+            WHERE {_route_bucket_condition(route)}
+            LIMIT 60000
+        """
 
-def get_route_time_matrix_query(has_time: bool, use_spatial: bool = False) -> str:
-    """Return SQL for the Time Analysis matrix: per route, the min / max / average time
-    (in seconds) a vehicle takes to pass the route — i.e. the gap between its origin-gate
-    and destination-gate crossings. Cross-DB safe (no MEDIAN / percentile funcs)."""
-    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
-    cte_sql = _get_sessionized_journeys_sql(None, use_spatial)
-    cte_sql = cte_sql.replace("-- time_placeholder --", time_sql)
+    if use_spatial:
+        from coordinates import ROAD_POLYGONS
+        wkt_polys = [polygon_to_wkt(p) for p in ROAD_POLYGONS]
+        clauses = [f"ST_Within(ST_Point(lon, lat), ST_GeomFromText('{w}'))" for w in wkt_polys]
+        spatial_sql = f"AND ({' OR '.join(clauses)})"
+    else:
+        spatial_sql = ""
 
     return f"""
-        WITH {cte_sql}
-        SELECT
-            route,
-            COUNT(*) as trips,
-            MIN(EXTRACT(EPOCH FROM (t_end - t_start))) as min_s,
-            MAX(EXTRACT(EPOCH FROM (t_end - t_start))) as max_s,
-            AVG(EXTRACT(EPOCH FROM (t_end - t_start))) as avg_s
-        FROM journey_segments
-        WHERE t_end > t_start
+        SELECT lat::float8, lon::float8
+        FROM (
+            SELECT DISTINCT vin, timestamp, event_type, lat, lon
+            FROM sensor
+            WHERE lat BETWEEN %s AND %s
+              AND lon BETWEEN %s AND %s
+              {event_sql}
+              {speed_sql}
+              {hour_sql}
+              {spatial_sql}
+        ) deduped
+        LIMIT 60000
+    """
+
+
+# ── Route matrix ──────────────────────────────────────────────────
+
+def get_route_matrix_trips_query(hour: int, has_time: bool) -> str:
+    """Trips per directional route = completed (vin, visit) traversals.
+    Params: (t_start, t_end) when has_time, else none."""
+    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
+    visits_cte = _get_visits_sql().replace("-- time_placeholder --", time_sql)
+    hour_filter = _hour_sql(hour, col="t_origin")
+    return f"""
+        WITH {visits_cte}
+        SELECT route, COUNT(*) AS trips
+        FROM route_visits
+        WHERE 1=1
+          {hour_filter}
         GROUP BY route
         ORDER BY route
     """
 
+
+def get_route_matrix_events_query(speed_bracket: int, hour: int, has_time: bool) -> str:
+    """Per-event rows for the O-D matrix: deduped events with their best visit's gate
+    crossing times. Section membership and route/partial bucketing happen in Python
+    (coordinates.point_in_polygon + SECTION_GATES), which keeps spatial and non-spatial
+    modes on the identical code path.
+
+    Row shape: (lat, lon, event_type, tg<gate> for gate in GATE_IDS).
+    Params: (t_start, t_end, t_start, t_end) when has_time — corridor pair then events
+    pair — else none.
+    """
+    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
+    visits_cte = _get_visits_sql().replace("-- time_placeholder --", time_sql)
+    events_cte = _deduped_events_sql(
+        time_sql=time_sql,
+        extra_sql=f"{_speed_sql(speed_bracket)}\n                  {_hour_sql(hour)}",
+    )
+    tg_cols = ", ".join(f"tg{g}" for g in GATE_IDS)
+    return f"""
+        WITH {visits_cte},
+{events_cte},
+{_attributed_sql()}
+        SELECT lat::float8, lon::float8, event_type, {tg_cols}
+        FROM attributed
+    """
+
+
+def get_route_time_matrix_query(has_time: bool) -> str:
+    """Time Analysis matrix: per route, min / max / average traversal seconds —
+    first crossing of the destination gate minus first crossing of the origin gate
+    within the same visit. Params: (t_start, t_end) when has_time, else none."""
+    time_sql = "AND timestamp BETWEEN %s AND %s" if has_time else ""
+    visits_cte = _get_visits_sql().replace("-- time_placeholder --", time_sql)
+    return f"""
+        WITH {visits_cte}
+        SELECT
+            route,
+            COUNT(*) AS trips,
+            MIN(EXTRACT(EPOCH FROM (t_dest - t_origin))) AS min_s,
+            MAX(EXTRACT(EPOCH FROM (t_dest - t_origin))) AS max_s,
+            AVG(EXTRACT(EPOCH FROM (t_dest - t_origin))) AS avg_s
+        FROM route_visits
+        GROUP BY route
+        ORDER BY route
+    """
+
+
+# ── Route trips panel ─────────────────────────────────────────────
+
 def get_route_trips_query(
     route: str,
-    use_spatial: bool = False,
     limit: int = 10,
-    offset: int = 0
+    offset: int = 0,
 ) -> str:
-    """Return SQL query for fetching crossings and events for a bidirectional route (Task 1).
-    Takes a combined route ('AC' or 'BC') and retrieves both directions.
-    Returns one page of `limit` trips (ordered by journey_start) starting at `offset`, so the
-    panel can page through routes with tens of thousands of trips via prev/next controls.
-    """
-    cte_sql = _get_sessionized_journeys_sql(route, use_spatial)
-    cte_sql = cte_sql.replace("-- time_placeholder --", "AND timestamp BETWEEN %s AND %s")
+    """One page of completed traversals for a directional route ('12'…'43'), with each
+    trip's telemetry rows over its whole visit window (so the trip's event list matches
+    the route-matrix attribution exactly).
 
-    query = f"""
-        WITH {cte_sql},
-        journey_bounds AS (
-            SELECT
-                t.vin,
-                t.journey_no,
-                t.route,
-                MIN(t.t_start) as t_start,
-                MAX(t.t_end) as t_end,
-                MIN(s.timestamp) as journey_start,
-                MAX(s.timestamp) as journey_end
-            FROM journey_segments t
-            JOIN sensor s ON t.vin = s.vin
-              AND s.timestamp BETWEEN CAST(%s AS TIMESTAMP) - INTERVAL '5 minutes' AND CAST(%s AS TIMESTAMP) + INTERVAL '5 minutes'
-              AND s.timestamp BETWEEN t.t_start - INTERVAL '2 minutes' AND t.t_end + INTERVAL '2 minutes'
-            WHERE s.lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
-              AND s.lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
-            GROUP BY t.vin, t.journey_no, t.route
-        ),
-        limited_trips AS (
-            SELECT * FROM journey_bounds
-            ORDER BY journey_start
+    Row shape: (vin, t_origin, t_dest, t0, t1, event_time, lat, lon, event_type,
+    vehicle_speed, origin, destination).
+    Params: (t_start, t_end, t_start, t_end) — corridor pair, then the padded sensor-join
+    pair for index pruning.
+    """
+    if route not in ROUTE_SECTION:
+        raise ValueError(f"Unknown route {route!r}; expected one of {ROUTES}")
+    visits_cte = _get_visits_sql().replace(
+        "-- time_placeholder --", "AND timestamp BETWEEN %s AND %s"
+    )
+    origin, dest = route[0], route[1]
+    return f"""
+        WITH {visits_cte},
+        trips AS (
+            SELECT vin, visit_no, t0, t1, t_origin, t_dest
+            FROM route_visits
+            WHERE route = '{route}'
+            ORDER BY t_origin
             LIMIT {int(limit)} OFFSET {int(offset)}
         )
-        SELECT 
+        SELECT
             t.vin,
-            t.journey_start as t_start,
-            t.journey_end as t_end,
-            s.timestamp as event_time,
-            s.lat::float8 as lat,
-            s.lon::float8 as lon,
+            t.t_origin,
+            t.t_dest,
+            t.t0,
+            t.t1,
+            s.timestamp AS event_time,
+            s.lat::float8 AS lat,
+            s.lon::float8 AS lon,
             s.event_type,
             s.vehicle_speed,
-            CASE 
-                WHEN t.route = '12' THEN '1'
-                WHEN t.route = '23' THEN '2'
-                WHEN t.route = '34' THEN '3'
-                WHEN t.route = '43' THEN '4'
-                WHEN t.route = '32' THEN '3'
-                WHEN t.route = '21' THEN '2'
-            END as origin,
-            CASE 
-                WHEN t.route = '12' THEN '2'
-                WHEN t.route = '23' THEN '3'
-                WHEN t.route = '34' THEN '4'
-                WHEN t.route = '43' THEN '3'
-                WHEN t.route = '32' THEN '2'
-                WHEN t.route = '21' THEN '1'
-            END as destination
-        FROM limited_trips t
-        JOIN sensor s ON t.vin = s.vin
-          AND s.timestamp BETWEEN CAST(%s AS TIMESTAMP) - INTERVAL '5 minutes' AND CAST(%s AS TIMESTAMP) + INTERVAL '5 minutes'
-          AND s.timestamp BETWEEN t.t_start - INTERVAL '2 minutes' AND t.t_end + INTERVAL '2 minutes'
-          AND s.timestamp BETWEEN t.journey_start AND t.journey_end
-        ORDER BY t_start, s.timestamp
+            '{origin}' AS origin,
+            '{dest}' AS destination
+        FROM trips t
+        JOIN sensor s ON s.vin = t.vin
+          AND s.timestamp BETWEEN CAST(%s AS TIMESTAMP) - INTERVAL '5 minutes'
+                              AND CAST(%s AS TIMESTAMP) + INTERVAL '5 minutes'
+          AND s.timestamp BETWEEN t.t0 AND t.t1
+          AND s.lat BETWEEN {ROAD_BOUNDS['lat_min']} AND {ROAD_BOUNDS['lat_max']}
+          AND s.lon BETWEEN {ROAD_BOUNDS['lon_min']} AND {ROAD_BOUNDS['lon_max']}
+        ORDER BY t.t_origin, s.timestamp
     """
-    return query
-

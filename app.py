@@ -5,7 +5,7 @@ Decoupled main router: All spatial coordinate boundaries are defined in coordina
 and all parameterized database queries are defined in sql_schemas.py.
 """
 
-import math, os, json, re
+import os, json, re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -336,19 +336,23 @@ def get_analytics(
     t_start: Optional[str] = Query(None),
     t_end:   Optional[str] = Query(None),
     countermeasure_date: Optional[str] = Query(None),
-    route: Optional[str] = Query(None, description="Optional active route filter, e.g., AC, BC"),
+    route: Optional[str] = Query(None, description="Optional directional route filter, e.g. 12, 23, 32"),
 ):
     """Event breakdown, crash frequency, before/after, risk score."""
+    if route is not None and route not in sql_schemas.ROUTES:
+        raise HTTPException(400, f"Invalid route. Expected one of: {', '.join(sql_schemas.ROUTES)}")
+
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '25000'")
     bp = (lat_min, lat_max, lon_min, lon_max)
     tp = (t_start, t_end) if (t_start and t_end) else ()
 
-    query = sql_schemas.get_analytics_query(bool(t_start and t_end), route, _SPATIAL_AVAILABLE)
-    
-    # Task 1: Param order varies depending on if query contains raw_gates transitions CTE
+    query = sql_schemas.get_analytics_query(bool(t_start and t_end), route)
+
+    # Param order — route branch: corridor time pair, events time pair, then bbox;
+    # plain branch: bbox then time pair.
     if route:
-        params = (tp + tp + tp + bp) if tp else bp
+        params = (tp + tp + bp) if tp else bp
     else:
         params = bp + tp
 
@@ -488,12 +492,15 @@ def get_blackspots():
 def get_heatmap(
     lat_min: float = Query(...), lat_max: float = Query(...),
     lon_min: float = Query(...), lon_max: float = Query(...),
-    event_type:    int   = Query(0,  description="0=all events, 1=braking, 2=accel, 3=turning"),
+    event_type:    int   = Query(0,  description="0=all events, 1=accel, 2=braking, 3=turning"),
     speed_bracket: int   = Query(0,  description="0=all, 1=0-60 km/h, 2=61-100, 3=100+"),
     hour:          int   = Query(-1, description="-1=all, 0-23=local Bangkok hour (UTC+7)"),
-    route:         Optional[str] = Query(None, description="Optional bidirectional route filter, e.g. AC, BC"),
+    route:         Optional[str] = Query(None, description="Optional directional route filter, e.g. 12, 23, 32"),
 ):
     """Heatmap point cloud for the chosen event-type / speed-bracket / hour / route filter."""
+    if route is not None and route not in sql_schemas.ROUTES:
+        raise HTTPException(400, f"Invalid route. Expected one of: {', '.join(sql_schemas.ROUTES)}")
+
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '30000'")
 
@@ -507,18 +514,23 @@ def get_heatmap(
         raise HTTPException(500, f"Database heatmap query failed: {e}")
     cur.close(); conn.close()
 
-    # Apply precise road polygon containment in python fallback if spatial is off
-    if not _SPATIAL_AVAILABLE and coordinates.ROAD_POLYGONS:
-        filtered_points = []
-        for r in rows:
-            lat, lon = r[0], r[1]
-            in_zone = False
-            for poly in coordinates.ROAD_POLYGONS:
-                if coordinates.point_in_polygon(lat, lon, poly):
-                    in_zone = True
-                    break
-            if in_zone:
-                filtered_points.append([lat, lon])
+    # Polygon containment. With a route, ALWAYS filter in Python against the route's
+    # OWN section polygon — the same predicate the route matrix uses — so the two agree
+    # exactly (SQL ST_Within treats boundary points differently from the ray-cast).
+    # Without a route, Python filtering is only the fallback when spatial SQL is off.
+    if route:
+        sec_poly = coordinates.section_polygon_for_route(route)
+        polys = [sec_poly] if sec_poly else coordinates.ROAD_POLYGONS
+    elif not _SPATIAL_AVAILABLE:
+        print("[heatmap] spatial extension unavailable — applying Python polygon filter")
+        polys = coordinates.ROAD_POLYGONS
+    else:
+        polys = None
+    if polys:
+        filtered_points = [
+            [r[0], r[1]] for r in rows
+            if any(coordinates.point_in_polygon(r[0], r[1], p) for p in polys)
+        ]
     else:
         filtered_points = [[r[0], r[1]] for r in rows]
 
@@ -547,54 +559,72 @@ def get_road():
 
 @app.get("/api/route-matrix")
 def get_route_matrix(
-    event_type:    int   = Query(0,  description="0=all events, 1=accel, 2=brake, 3=turning"),
     speed_bracket: int   = Query(0,  description="0=all, 1=0-60 km/h, 2=61-100, 3=100+"),
     hour:          int   = Query(-1, description="-1=all, 0-23=local Bangkok hour (UTC+7)"),
     t_start: Optional[str] = Query(None),
     t_end:   Optional[str] = Query(None),
 ):
-    """Origin-Destination (O-D) Route Matrix calculated dynamically in SQL.
-    Task 1: Groups bidirectional AC/CA transitions under 'AC' and BC/CB under 'BC' and excludes AB/BA.
-    """
-    conn = _conn(); cur = conn.cursor()
-    cur.execute("SET statement_timeout = '20000'")
+    """Origin-Destination route matrix, visit-based attribution.
 
-    query = sql_schemas.get_route_matrix_query(speed_bracket, hour, bool(t_start and t_end), _SPATIAL_AVAILABLE)
-    # New matrix uses two time placeholders: the sessionization CTE and the events CTE.
-    params = (t_start, t_end, t_start, t_end) if (t_start and t_end) else ()
+    Each directional row counts the deduped events inside the route's own section from
+    vehicles whose visit crossed BOTH of that section's gates (direction from crossing
+    order). Per-section `partial` rows hold events of vehicles that crossed at most one
+    gate. Directional rows + partial sum exactly to each section's polygon total, so the
+    matrix reconciles with the per-section analytics card and the heatmap.
+    """
+    has_time = bool(t_start and t_end)
+    tp = (t_start, t_end) if has_time else ()
+
+    conn = _conn(); cur = conn.cursor()
+    cur.execute("SET statement_timeout = '30000'")
 
     try:
-        cur.execute(query, params)
-        rows = cur.fetchall()
+        cur.execute(sql_schemas.get_route_matrix_trips_query(hour, has_time), tp)
+        trip_rows = cur.fetchall()
+        cur.execute(sql_schemas.get_route_matrix_events_query(speed_bracket, hour, has_time), tp + tp)
+        event_rows = cur.fetchall()
     except Exception as e:
         cur.close(); conn.close()
         raise HTTPException(500, f"Database query failed: {e}")
-
     cur.close(); conn.close()
 
-    # Pre-populate directional rows
-    matrix = {
-      "12": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-      "23": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-      "34": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-      "43": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-      "32": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-      "21": {"trips": 0, "brake": 0, "turn": 0, "accel": 0},
-    }
+    _KIND = {1: "accel", 2: "brake", 3: "turn"}
+    matrix = {r: {"trips": 0, "brake": 0, "turn": 0, "accel": 0} for r in sql_schemas.ROUTES}
+    partial = {s["id"]: {"brake": 0, "turn": 0, "accel": 0}
+               for s in coordinates.ROAD_SECTIONS if s["id"] in coordinates.SECTION_GATES}
 
-    for route, trips, brake, turn, accel in rows:
+    for route, trips in trip_rows:
         if route in matrix:
-            matrix[route] = {
-                "trips": trips,
-                "brake": brake,
-                "turn": turn,
-                "accel": accel
-            }
+            matrix[route]["trips"] = int(trips)
+
+    # Bucket each event: locate its section by polygon containment, then assign it to a
+    # directional route if its vehicle's visit crossed both of that section's gates,
+    # otherwise to the section's partial bucket. Same code path with or without the
+    # DB spatial extension, so degraded mode cannot change the numbers.
+    sections = [(s["id"], s["polygon"]) for s in coordinates.ROAD_SECTIONS
+                if s["id"] in coordinates.SECTION_GATES]
+    for row in event_rows:
+        lat, lon, et = row[0], row[1], row[2]
+        kind = _KIND.get(et)
+        if kind is None:
+            continue
+        sec_id = next((sid for sid, poly in sections
+                       if coordinates.point_in_polygon(lat, lon, poly)), None)
+        if sec_id is None:
+            continue
+        tg = {g: row[3 + i] for i, g in enumerate(sql_schemas.GATE_IDS)}
+        lo, hi = coordinates.SECTION_GATES[sec_id]
+        if tg[lo] is not None and tg[hi] is not None:
+            # Same-timestamp crossings resolve to the NE route (matches route_visits
+            # and _route_bucket_condition in sql_schemas).
+            matrix[lo + hi if tg[lo] <= tg[hi] else hi + lo][kind] += 1
+        else:
+            partial[sec_id][kind] += 1
 
     return {
         "matrix": matrix,
+        "partial": partial,
         "filter": {
-            "event_type": event_type,
             "speed_bracket": speed_bracket,
             "hour": hour,
             "t_start": t_start,
@@ -613,7 +643,7 @@ def get_route_time_matrix(
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
 
-    query = sql_schemas.get_route_time_matrix_query(bool(t_start and t_end), _SPATIAL_AVAILABLE)
+    query = sql_schemas.get_route_time_matrix_query(bool(t_start and t_end))
     params = (t_start, t_end) if (t_start and t_end) else ()
 
     try:
@@ -625,7 +655,7 @@ def get_route_time_matrix(
     cur.close(); conn.close()
 
     matrix = {r: {"trips": 0, "min_s": None, "max_s": None, "avg_s": None}
-              for r in ("12", "23", "34", "43", "32", "21")}
+              for r in sql_schemas.ROUTES}
     for route, trips, min_s, max_s, avg_s in rows:
         if route in matrix:
             matrix[route] = {
@@ -647,19 +677,22 @@ def get_route_trips(
     limit: int = Query(10, ge=1, le=500, description="Trips per page"),
     offset: int = Query(0, ge=0, description="Page offset (multiples of limit)"),
 ):
-    """Fetch vehicle crossings and their events on a specific adjacent directional route inside a time window."""
-    if route not in ("12", "23", "34", "43", "32", "21"):
-        raise HTTPException(400, "Invalid route. Expected '12', '23', '34', '43', '32', or '21'")
+    """Fetch completed traversals and their events on an adjacent directional route inside
+    a time window. Trip t_start/t_end are the true gate-crossing times (matching the time
+    matrix); the event list uses the same visit + section-polygon attribution as the route
+    matrix, so per-trip events sum to the matrix row."""
+    if route not in sql_schemas.ROUTES:
+        raise HTTPException(400, f"Invalid route. Expected one of: {', '.join(sql_schemas.ROUTES)}")
 
     conn = _conn(); cur = conn.cursor()
     cur.execute("SET statement_timeout = '20000'")
-    query = sql_schemas.get_route_trips_query(route, _SPATIAL_AVAILABLE, limit, offset)
+    query = sql_schemas.get_route_trips_query(route, limit, offset)
     # Each route's events are shown in its OWN section (12/21→A, 23/32→B, 34/43→C),
     # matching the route matrix and per-section breakdown cards.
     section_poly = coordinates.section_polygon_for_route(route)
 
     try:
-        cur.execute(query, (t_start, t_end, t_start, t_end, t_start, t_end))
+        cur.execute(query, (t_start, t_end, t_start, t_end))
         rows = cur.fetchall()
     except Exception as e:
         cur.close(); conn.close()
@@ -667,29 +700,29 @@ def get_route_trips(
 
     cur.close(); conn.close()
 
-    # Process and group rows by unique trip key (vin, t_start, t_end)
+    # Group rows by unique trip key (vin, origin crossing, destination crossing)
     trips_dict = {}
-    for vin, t_start_dt, t_end_dt, ev_time, lat, lon, ev_type, spd, origin, dest in rows:
-        key = (vin, t_start_dt, t_end_dt)
+    for vin, t_origin, t_dest, _t0, _t1, ev_time, lat, lon, ev_type, spd, origin, dest in rows:
+        key = (vin, t_origin, t_dest)
         if key not in trips_dict:
             trips_dict[key] = {
                 "vin": vin,
-                "t_start": t_start_dt.isoformat() + "Z",
-                "t_end": t_end_dt.isoformat() + "Z",
+                "t_start": t_origin.isoformat() + "Z",
+                "t_end": t_dest.isoformat() + "Z",
                 "origin": origin,
                 "destination": dest,
                 "max_speed": 0.0,
                 "events": []
             }
-        
+
         trip = trips_dict[key]
         if spd is not None:
             trip["max_speed"] = max(trip["max_speed"], float(spd))
-            
+
         if ev_type in (1, 2, 3) and ev_time is not None and lat is not None and lon is not None:
-            # Restrict events to this route's own section polygon
+            # Restrict events to this route's own section polygon (visit window already
+            # applied in SQL). Also drops the exact-duplicate rows present in the DB.
             if section_poly and coordinates.point_in_polygon(float(lat), float(lon), section_poly):
-                # Avoid duplicate events at the exact same millisecond
                 if not any(e["timestamp"] == ev_time.isoformat() + "Z" and e["event_type"] == ev_type for e in trip["events"]):
                     trip["events"].append({
                         "event_type": int(ev_type),

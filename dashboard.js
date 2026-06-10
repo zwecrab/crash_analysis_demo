@@ -172,7 +172,7 @@ async function init() {
     updateCharts(ad);
     try {
       const rmRes = await fetchRouteMatrix();
-      updateRouteMatrixUI(rmRes.matrix);
+      updateRouteMatrixUI(rmRes.matrix, rmRes.partial);
     } catch (err) {
       console.error('Failed to load route matrix at startup:', err);
     }

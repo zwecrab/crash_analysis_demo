@@ -171,6 +171,14 @@ ROUTE_SECTION = {
     '34': 'C', '43': 'C',
 }
 
+# Per section: its two bounding gates ordered by centerline progress (low, high).
+# Derived from ROUTE_SECTION so adding a gate/section only requires updating that map.
+SECTION_GATES = {
+    sec: (route[0], route[1])
+    for route, sec in ROUTE_SECTION.items()
+    if GATE_PROGRESS[route[0]] < GATE_PROGRESS[route[1]]
+}
+
 def section_polygon_for_route(route: str) -> list:
     """Return the polygon of the section that sits strictly between the route's two gates.
     e.g. '23'/'32' -> Section B (between gate 2 and gate 3). Falls back to all road

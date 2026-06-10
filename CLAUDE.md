@@ -81,9 +81,35 @@ Key things the visualization must show:
 
 ---
 
+## Canonical Counting Definitions (all panels share these)
+
+Implemented in `sql_schemas.py` (visit CTE machinery) + `app.py` (polygon bucketing).
+Any two panels showing the same scope must show the same number — verified end-to-end.
+
+- **Event identity:** one physical event = `DISTINCT (vin, timestamp, event_type, lat, lon)`.
+  The raw table contains exact duplicate rows (e.g. 107 of Section B's 1077 raw rows);
+  every count dedupes, so SRMA (Section B) reads **970**, not 1077.
+- **Visit:** a vehicle's continuous in-corridor presence (|perp offset| ≤ 17.25 m inside
+  `ROAD_BOUNDS`), split at >5-minute gaps between consecutive points.
+- **Gate crossing:** interior gates (2,3,4) by straddle test within the visit; edge gate 1
+  credited ONCE per visit at the closest-approach (minimum-progress) point below the
+  section cap.
+- **Event attribution (partition):** event in section S (polygon containment, Python
+  ray-cast `point_in_polygon` — the single geometry predicate) joins its vehicle's visit
+  (containment, else nearest within 5 min). Visit crossed BOTH of S's gates → directional
+  route row (order of first crossings; same-timestamp ties → NE); otherwise → S's
+  **partial** row. So `Σ directional + partial == section total == analytics card == heatmap`.
+- **Reference numbers (whole dataset, deduped):** Section B = 970 = route 2→3 (187) +
+  3→2 (676) + partial (107); per type accel 339 / brake 577 / turn 54.
+- **Known limitations:** U-turn round trips within one visit attribute to a single
+  direction; gate-1 dwellers (vehicles parking in Section A between gate events) give
+  truthful but large MAX traversal times for routes 12/21.
+
+---
+
 ## Tech Stack (V2)
-- **Backend:** FastAPI (Python) + psycopg2
-- **Frontend:** Leaflet.js + Chart.js + Vanilla JS (`dashboard.js`, `style.css`, `map_report.html`)
+- **Backend:** FastAPI (Python) + psycopg2 (remote PostgreSQL) or DuckDB (local `sensor_local.duckdb`)
+- **Frontend:** Leaflet.js + Chart.js + Vanilla JS (`dashboard.js`, `modules/*.js`, `style.css`, `map_report.html`)
 - **Animation Engine:** Frontend waypoint interpolation with dead-reckoning for missing timestamps (requestAnimationFrame).
 - **Prediction Model Integration:** `POST /api/predict` stub endpoint ready for ML team.
 
@@ -92,11 +118,15 @@ Key things the visualization must show:
 |------|---------|
 | `db_connection.py` | PostgreSQL helper, reads `.env` |
 | `sensor_table.md` | Full data dictionary for `sensor` table |
-| `app.py` | FastAPI backend |
-| `map_report.html` | Frontend dashboard layout |
+| `app.py` | FastAPI backend (endpoints, Python-side polygon bucketing) |
+| `sql_schemas.py` | All SQL templates; visit sessionization + event attribution core |
+| `coordinates.py` | Gate/section geometry, centerline projection, polygon helpers |
+| `map_report.html` | Frontend dashboard layout (incl. matrix partial rows) |
 | `style.css` | Professional dark-theme styling |
 | `dashboard.js` | Map rendering, animation loop, and API interaction |
+| `modules/*.js` | Frontend modules (routes, charts, heatmap, playback, …) |
 | `PREDICTION_API.md` | Contract for the ML prediction model integration |
+| `scratch/srma_event_partition.py` | Ground-truth reconciliation script (970 = both + one-gate) |
 
 ---
-*Last updated: 2026-04-22*
+*Last updated: 2026-06-11*

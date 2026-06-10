@@ -1251,6 +1251,22 @@ html,body{
 .rm-row.rm-connector:hover {
   border-left: 3px solid var(--accent-hi);
 }
+/* Partial rows — one-gate visits per section; informational, not clickable */
+.rm-partial {
+  border-top: 1px dashed var(--border-paper);
+  cursor: default;
+}
+.rm-partial td {
+  opacity: 0.65;
+}
+.rm-partial .rm-route-name {
+  padding: 8px 6px;
+  font-weight: 400;
+  font-style: italic;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 
 /* Animated Route Line & Tooltip */
 .animated-route-line {
